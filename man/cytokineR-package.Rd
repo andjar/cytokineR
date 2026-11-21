@@ -34,7 +34,14 @@ Each step is a registered method (see \code{\link[=cyto_methods]{cyto_methods()}
 object (\code{\link[=cyto_steps]{cyto_steps()}}, \code{\link[=cyto_fit]{cyto_fit()}}). Pipelines (\code{\link[=cyto_pipeline]{cyto_pipeline()}}) can be
 compared with \code{\link[=benchmark_pipelines]{benchmark_pipelines()}} using scale-free metrics on held-out
 replicate material, and developed against data with known truth from
-\code{\link[=simulate_cyto]{simulate_cyto()}}.
+\code{\link[=simulate_cyto]{simulate_cyto()}}. \code{\link[=waterfall_lattice]{waterfall_lattice()}} shows how much each step
+contributes to a result, in every combination of the other steps;
+\code{\link[=model_statistic]{model_statistic()}} attaches any model (\code{lm()}, \code{glm()}, ...) to it, and
+\code{\link[=select_pipeline]{select_pipeline()}} chooses a pipeline on training samples and checks the
+choice on unseen test samples (\code{\link[=split_samples]{split_samples()}}).
+\code{\link[=finalise_pipeline]{finalise_pipeline()}}, \code{\link[=processing_report]{processing_report()}} and \code{\link[=export_dataset]{export_dataset()}}
+produce the analysis dataset with a record of how it was made (see
+\code{vignette("harmonising")}).
 }
 \seealso{
 Useful links:

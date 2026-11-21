@@ -1,3 +1,42 @@
+# cytokineR (development version)
+
+* `waterfall_lattice()` runs a pipeline with every on/off combination of its
+  optional steps and shows how much each step contributes to a result: the
+  change along the usual waterfall route, the order-free Shapley share
+  (shares add up to the total change), and the range across all combinations
+  of the other steps. `plot()` draws the lattice (every pipeline a node, the
+  waterfall route in bold) and the per-step contributions; see
+  `vignette("waterfall-lattice")`.
+* `metric_effect()`: standardised effect of a study variable (Cohen's d, or
+  the within-subject change with `adjust = ~ subject`) with its p-value, for
+  following the reported result through the pipeline.
+* `model_statistic()` turns any model called as `model(formula, data = )`
+  (`lm()`, `glm()`, `lme4::lmer()`, ...) into a statistic or metric: a
+  coefficient (with SE and p-value) per analyte or from one model on the
+  wide table, or out-of-sample prediction scores (AUC, R^2, RMSE,
+  correlation, or your own), cross-validated within training samples or
+  scored on unseen test samples.
+* Unseen test samples: `split_samples()` sets aside samples or whole
+  subjects (bridging samples stay in training); the new `test` argument of
+  `waterfall_lattice()` and `benchmark_pipelines()` hides them from every
+  fitting step and passes them to the statistic.
+* `select_pipeline()` chooses the best combination of steps on the training
+  samples and only then scores it on the test samples. It takes several
+  criteria (e.g. residual batch and plate effects, biology kept, control
+  agreement) combined by weighted mean rank; `resolution` treats differences
+  too small to matter as ties, which go to the simpler pipeline. `plot()`
+  shows the training against the test score of every pipeline per
+  criterion; `$pipeline` is the chosen pipeline.
+* `sample_metric()` evaluates any `metric_*()` on the training or the test
+  samples; `pool_test = TRUE` compares a held-out cohort with the rest.
+* `split_samples(values = )` holds out a whole cohort or batch.
+* `finalise_pipeline()` applies the chosen pipeline (refitted on all samples
+  or not) and records how it was chosen; `processing_report()` writes a
+  methods-ready Markdown account of the data, steps, selection and censoring;
+  `export_dataset()` writes wide and long CSV files, the report and the RDS.
+* New `vignette("harmonising")`: from raw plates to one analysis-ready
+  dataset across batches and cohorts.
+
 # cytokineR 0.1.0
 
 First release of the rewritten package.

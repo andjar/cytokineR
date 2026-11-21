@@ -4,7 +4,9 @@
 # compared on equal terms.
 
 .metric_direction <- c(reliability = 1, plate_r2 = -1, detected = 1,
-                       bio_r2 = 1, truth_rho = 1, truth_rmse = -1)
+                       bio_r2 = 1, truth_rho = 1, truth_rmse = -1,
+                       pred_r2 = 1, pred_rmse = -1, pred_auc = 1,
+                       pred_cor = 1)
 
 .direction_of <- function(metric) {
   base <- sub("_(plate|batch|[A-Za-z0-9]+)$", "", metric)

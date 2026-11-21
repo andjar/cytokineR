@@ -1,0 +1,253 @@
+---
+title: "From raw plates to one analysis-ready dataset"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{From raw plates to one analysis-ready dataset}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 7.5,
+                      fig.height = 5.5, dpi = 80)
+library(cytokineR)
+library(data.table)
+```
+
+The goal of pre-processing a multi-batch, multi-cohort cytokine study is one
+dataset in which samples from every plate, kit lot and cohort can be compared,
+ready for analyses that may not even be planned yet. Choosing the pipeline
+carries three risks:
+
+1. **Under-correction.** Plate, batch or cohort effects remain and show up as
+   false findings, or hide real ones.
+2. **Over-correction.** The correction removes biology along with the
+   technical variation, for example when plates or cohorts differ for real
+   reasons.
+3. **Overfitting the choice.** Trying many pipelines and keeping the best one
+   rewards whichever pipeline happens to fit the noise in this particular
+   dataset.
+
+This vignette goes through a workflow that addresses all three:
+
+- candidate steps;
+- an unseen test set;
+- criteria for harmonisation and biology;
+- the choice, made on the training samples only;
+- a check of that choice on the test samples;
+- the final dataset, exported with a report of how it was made.
+
+## 1. Candidate steps
+
+Write down the steps you are considering, in processing order. Steps that
+are not in question go in `fixed`; the others are switched on and off in
+every combination (2^K pipelines for K optional steps).
+
+```{r}
+steps <- list(
+  log2   = pipe_transform("log2"),
+  beads  = pipe_custom(function(x) flag_beads(x, 35), label = "beads"),
+  median = pipe_normalize("median", within = "time"),
+  ctrl   = pipe_normalize("anchor", anchors = "ctrl_low", scope = "batch"),
+  bridge = pipe_correct_batch("bridge")
+)
+```
+
+Any step can be optional, including calibration (`pipe_calibrate("shared")`)
+and imputation (`pipe_impute("rank_tobit")`). A transform such as
+`pipe_transform("mob")`, switched on after `log2`, replaces log2 FI with
+multiples of blank, so it also works as an on/off choice. Keep K small: each
+extra step doubles the number of pipelines and the number of chances to
+overfit.
+
+## 2. An unseen test set
+
+```{r}
+test <- split_samples(cyto_example, prop = 0.4, by = "subject",
+                      strata = "batch")
+length(test)
+```
+
+This takes 40% of the subjects, with all their samples, stratified by batch
+so that every batch is represented on both sides. With cohorts, stratify by
+cohort too (`strata` takes one column, so combine them if needed). Subjects
+whose samples serve as bridges between batches stay in training, so batch
+correction keeps its anchors.
+
+During selection every row of a test sample gets `use_for_fit = FALSE`.
+Plate centring, batch correction and imputation are fitted without these
+samples and then applied to them as if they were new data. The test samples
+also play no part in choosing the pipeline. Their scores are therefore an
+honest estimate of how the chosen pipeline does on data it has not seen.
+(Methods that ignore `use_for_fit`, here `combat`, cannot keep that
+promise.)
+
+## 3. Criteria: harmonised, but with the biology kept
+
+Each criterion is computed per pipeline, separately on the training and on
+the test samples:
+
+```{r}
+criteria <- list(
+  # residual batch and plate effects among study samples, within time point
+  batch   = sample_metric(metric_plate_effect, by = "batch", within = "time"),
+  plate   = sample_metric(metric_plate_effect, by = "plate", within = "time"),
+  # known biology that must survive: change over time within subject
+  biology = sample_metric(metric_bio, ~ time, adjust = ~ subject),
+  # agreement of a control that no step may fit on, across batches
+  control = default_metrics()$reliability_batch
+)
+```
+
+* `batch` and `plate` are adjusted partial R² values: the share of variation
+  explained by batch or plate after accounting for time point. Lower is
+  better, and 0 means no detectable effect. Accounting for the strata
+  (`within`) matters: if one cohort is sicker than another, a cohort effect
+  is partly real and should not be "corrected" away.
+* `biology` guards against over-correction. A pipeline that flattens
+  everything would win on `batch` and lose here. Use a variable whose
+  effect you trust, such as time, a treatment, or a known group difference.
+  Don't use the effect your study is about.
+* `control` uses material held out from all fitting (`holdout` below).
+  Because it does not depend on which samples are in training or test, it
+  gives the same value for both; it helps the choice but is not an
+  independent check.
+* Any model can be a criterion as well: `model_statistic()` wraps `lm()`,
+  `glm()`, `lmer()` and so on (see `vignette("waterfall-lattice")`).
+
+## 4. Choose on the training samples
+
+```{r}
+sel <- select_pipeline(cyto_example, steps, criteria, test = test,
+                       fixed = "log2", holdout = "ctrl_high",
+                       resolution = 0.01)
+sel
+```
+
+Pipelines are ranked on each criterion, and the mean rank decides.
+`resolution = 0.01` makes differences smaller than 0.01 count as ties, and
+ties go to the pipeline with fewer steps. Without it, the third decimal of a
+batch R² can decide the choice, which is chasing noise. A simpler pipeline
+that is as good as a complex one is also less likely to fail on the next
+batch. Use `weights` if some criteria matter more than others.
+
+```{r, include = FALSE}
+ch <- sel$scores[selected == TRUE]
+none <- sel$scores[pipeline == "none"]
+```
+
+The chosen pipeline is **`r sel$selected`**. Without any correction, batch
+explains `r round(none$batch_test, 3)` of the variation among the unseen
+test samples (adjusted partial R²). With the chosen pipeline it explains
+`r round(ch$batch_test, 3)`. For plate the figures are
+`r round(none$plate_test, 3)` and `r round(ch$plate_test, 3)`, and the time
+effect within subjects stays at `r round(ch$biology_test, 3)`.
+
+## 5. Check the choice on the unseen samples
+
+```{r}
+plot(sel)
+```
+
+Each panel is one criterion, and each point is one pipeline. Points near
+the dashed line score the same on unseen samples as in training. The choice
+generalises when the chosen pipeline (orange) lies close to that line on
+every criterion. The blue point, the best pipeline on test, is there to
+show how much better the choice could have been. Choosing by it would
+overfit the test set.
+
+Every criterion also has a lattice that shows what each step contributes,
+here the residual batch effect on the test samples:
+
+```{r, fig.height = 4}
+plot(sel$lattices[["batch::test"]], "contributions")
+```
+
+### Will it work for a new cohort?
+
+A stricter check holds out a whole batch, or a whole cohort, as if it
+arrived later:
+
+```{r}
+new_batch <- split_samples(cyto_example, by = "batch", values = "2")
+criteria_new <- criteria
+# a single held-out batch has no batch effect of its own: compare it with
+# the training samples instead
+criteria_new$batch <- sample_metric(metric_plate_effect, by = "batch",
+                                    within = "time", pool_test = TRUE)
+criteria_new$plate <- NULL
+sel_new <- select_pipeline(cyto_example, steps, criteria_new,
+                           test = new_batch, fixed = "log2",
+                           holdout = "ctrl_high", resolution = 0.01)
+sel_new$scores[, .(pipeline, batch_test = round(batch_test, 3),
+                   biology_train = round(biology_train, 3),
+                   biology_test = round(biology_test, 3))][1:8]
+```
+
+```{r, include = FALSE}
+bt <- sel_new$scores
+med <- bt[pipeline == "median"]
+```
+
+Here the study samples of batch 2 are unseen, so on its plates sample-based
+median centring can only be fitted on the few bridging samples. The time
+effect measured in batch 2 then drops to `r round(med$biology_test, 3)`
+with median centring alone, compared with `r round(bt[pipeline == "bridge",
+biology_test], 3)` with bridge correction alone. Steps that are fitted on
+material present on every plate (controls, bridges) carry over to a new
+cohort better than steps that need its samples.
+
+## 6. Produce, export and document the dataset
+
+```{r}
+final <- finalise_pipeline(cyto_example, sel)
+final
+```
+
+`finalise_pipeline()` runs the chosen pipeline on the raw data. With
+`refit = TRUE` (the default) all samples, test samples included, are used for
+the final estimates: the test set has done its job, and more data give more
+stable corrections. With `refit = FALSE` the test samples stay out of the
+fits, exactly as when they were scored. How the pipeline was chosen is
+stored in the object (`final$meta$selection`).
+
+```{r}
+processing_report(final)
+```
+
+The report is ready for a methods section. `export_dataset()` writes
+everything a later analysis needs:
+
+```{r}
+out <- export_dataset(final, file.path(tempdir(), "study"), name = "study")
+basename(out)
+```
+
+* `study_wide.csv`: one row per sample, one column per analyte: the values
+  to analyse;
+* `study_long.csv`: every measurement with censoring, limits, imputation and
+  QC flags;
+* `study_report.md`: the processing report;
+* `study.rds`: the `cyto` object with the full log and stored estimates
+  (`cyto_steps()`, `cyto_fit()`).
+
+When a new batch or cohort arrives, combine it with the raw data
+(`cyto_bind()`) and run `finalise_pipeline(raw_all, sel$pipeline)`. Batch
+correction is anchored to the reference batch, so the scale stays the same.
+Steps that pool information across batches can still shift earlier values
+slightly, so re-export the whole dataset rather than appending to the old
+files, and keep the old report for comparison.
+
+## Checklist
+
+* Decide the candidate steps and criteria **before** looking at the
+  results, and keep the number of optional steps small.
+* Set aside a test set of whole subjects, stratified by batch and cohort.
+  Keep bridging samples and anchor material in training.
+* Use at least one harmonisation criterion and one biology criterion, and
+  account for real differences between groups (`within`).
+* Choose on the training samples only, with a `resolution` that ignores
+  differences too small to matter.
+* Report the test scores of the chosen pipeline, not the best test scores.
+* Hold out a whole batch or cohort if the dataset will grow.
+* Export the dataset with its processing report.

@@ -11,7 +11,8 @@ benchmark_pipelines(
   holdout = NULL,
   metrics = default_metrics(),
   keep = FALSE,
-  verbose = TRUE
+  verbose = TRUE,
+  test = NULL
 )
 
 \method{plot}{cyto_benchmark}(x, metrics = NULL, ...)
@@ -30,6 +31,10 @@ selectors (folds).}
 \item{keep}{Keep the processed objects in the result?}
 
 \item{verbose}{Print progress?}
+
+\item{test}{Optional unseen test set: a selector or a vector of
+\code{sample_id}s (see \code{\link[=split_samples]{split_samples()}}). All rows of these samples get
+\code{use_for_fit = FALSE} in every fold, so no pipeline is fitted on them.}
 
 \item{...}{Unused.}
 }
