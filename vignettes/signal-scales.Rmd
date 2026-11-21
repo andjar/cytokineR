@@ -1,0 +1,261 @@
+---
+title: "Signal scales, plate effects and fragile standard curves"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Signal scales, plate effects and fragile standard curves}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 7,
+                      fig.height = 4.5, dpi = 80)
+library(cytokineR)
+library(data.table)
+```
+
+This vignette explains the ideas behind the signal representations and
+calibration methods in cytokineR, and why the conventional route -- one
+five-parameter logistic standard curve per plate -- is not always the best
+choice.
+
+## A simple model of what goes wrong between plates
+
+For an analyte with true concentration $C$ in the well, the median
+fluorescence intensity on plate $p$ is approximately
+
+$$
+\mathrm{FI} = 2^{\gamma_p}\Big[B\,2^{\beta_p} + (T - B)\,
+S\big(\log_2 C + \eta_p\big)\Big],
+$$
+
+where $S$ is a sigmoid, $B$ and $T$ are the background and the saturation
+level, and three plate effects act on top:
+
+| effect | symbol | physical cause (examples) | shape on the log2 FI scale |
+|---|---|---|---|
+| gain | $\gamma_p$ | reader calibration, detection antibody / SAPE amount | vertical shift of the whole curve |
+| potency | $\eta_p$ | incubation time and temperature, antibody lot | horizontal shift of the curve |
+| background | $\beta_p$ | matrix, washing, blocking | moves only the lower asymptote |
+
+Between kit lots (batches) the same effects occur, and in addition the
+*assigned* concentrations of the standards are themselves uncertain: every
+lot's standard has its own true concentration, and an error there shifts every
+concentration calibrated from it.
+
+The simulator (`simulate_cyto()`) generates data from exactly this model, which
+is what lets us check methods against the truth.
+
+## Signal representations
+
+`cyto_transform()` defines what is being measured. All representations are on
+a log2 scale, so a difference of 1 is a two-fold change.
+
+| method | value | removes | cost |
+|---|---|---|---|
+| `log2` | $\log_2$ FI | nothing | -- |
+| `bgsub` | $\log_2$(FI $-$ blank) | additive background | noisy near zero |
+| `mob` | $\log_2$(FI / blank) | gain (if blanks track it) | as noisy as the blanks |
+| `mos` | $\log_2$(FI / FI$_{\text{ref. standard}}$) | gain, local potency | depends on one standard |
+| `moc` | $\log_2$(FI / FI$_{\text{control}}$) | gain, local potency | needs the same control on every plate |
+
+The ratio representations need no curve fitting and are never censored. They
+give relative, not absolute, units -- which is all most analyses (group
+comparisons, correlations, changes over time) need. Breen et al. (2016,
+*Sci Rep* 6:26996) showed that raw fluorescence often has better statistical
+properties than the derived concentrations, particularly for low-abundance
+analytes.
+
+### Multiple of blank
+
+Dividing by the plate's blank removes the plate gain only to the extent that
+the blank wells move with it. Blanks are also the noisiest wells (low FI,
+often only one or two per plate), so `mob` shrinks each plate's blank level
+towards the batch mean by empirical Bayes (`shrink = TRUE`): plates with
+consistent blank replicates keep their own value, plates with erratic blanks
+borrow from the others.
+
+```{r}
+m <- cyto_transform(cyto_example, "mob")
+head(cyto_fit(m))
+```
+
+Independently of normalisation, multiple-of-blank is a natural *detectability*
+scale: the fraction of samples with FI more than twice the blank is a quick,
+curve-free summary of which analytes are measurable at all.
+
+```{r}
+m$data[sample_type == "unknown", .(above_2x_blank = mean(value > 1)),
+       by = analyte][order(above_2x_blank)]
+```
+
+### Multiple of standard
+
+`mos` divides by the FI of one standard on the same plate. With
+`level = "auto"` the reference is, per analyte, the standard whose FI is
+closest to the typical sample, so the correction is most accurate where the
+samples are. Because standards of different kit lots have different assigned
+concentrations, `by_conc = TRUE` instead interpolates each plate's FI at a
+fixed *concentration* (log-log between the neighbouring standards), which
+makes the ratio comparable across lots.
+
+```{r}
+s <- cyto_transform(cyto_example, "mos", by_conc = TRUE)
+head(cyto_fit(s))
+```
+
+### Multiple of control
+
+`moc` anchors every plate to the control material(s) measured on it -- the
+same idea as inter-plate controls in Olink's NPX scale. Any material works if
+it is (i) the same physical material on every plate and (ii) in the
+measurable range: a pooled serum or plasma is ideal. With several materials
+the plate level is estimated robustly from all of them.
+
+## Plate and batch correction
+
+`cyto_normalize()` estimates a correction per plate (or batch) and analyte and
+applies it to *all* wells of that plate. The methods differ in what they
+assume:
+
+* **Comparable samples** (`median`, `quantile`): every plate holds a similar
+  mix of samples. True for randomised layouts; with `within = "time"` (or
+  study, group, ...) the comparison is made within strata, which protects
+  layouts where plates differ in composition.
+* **Anchor material** (`anchor`, `bridge`): some material is measured on
+  several plates or batches -- controls, standards, bridging samples. No
+  assumption about the study samples is needed, but the anchor must behave
+  like the samples. With `fit = "affine"` and anchors that span the range
+  (standards), compression of the signal is corrected too.
+* **Known covariates** (`regress`): plate effects are removed from a linear
+  model that also contains the biological covariates, so unbalanced designs
+  are handled if the covariates are known.
+
+## Why per-plate standard curves are fragile
+
+A 5PL curve has five parameters, typically estimated from eight levels in
+duplicate. Several things then go wrong:
+
+1. **The low end sits near the asymptote.** Where many cytokines are measured,
+   the curve is flat, so small FI noise becomes large concentration noise and
+   the lower limit of quantification differs from plate to plate.
+2. **One bad standard well bends the whole curve.** With few points per
+   curve, a pipetting error moves every concentration on that plate.
+3. **Censoring becomes plate-dependent.** Because the working range differs
+   between plates, the same sample can be "OOR <" on one plate and quantified
+   on another; missingness then carries a plate effect.
+4. **Lot errors pass straight through.** Every concentration inherits the
+   error of the lot's assigned standard concentrations; only material
+   measured in several batches can remove it.
+
+A small experiment makes points 1--3 concrete. On one plate, we double the
+FI of a single standard well -- in turn at every level and for three
+analytes -- and record how far the calibrated values of the samples and
+controls on that plate move, and how many previously quantified values are
+lost to censoring:
+
+```{r}
+methods <- list("5PL per plate" = list("5pl"),
+                "spline per plate" = list("spline"),
+                "shared 5PL (robust)" = list("shared"))
+res <- list()
+for (an in c("IL-8", "IP-10", "VEGF")) {
+  base <- cyto_filter(cyto_example, analyte == an)
+  ref <- lapply(methods, function(m) do.call(cyto_calibrate, c(list(base), m))$data)
+  for (lv in 1:8) {
+    x <- base
+    x$data <- data.table::copy(x$data)      # data.table: copy before editing
+    w <- x$data[plate == "b1p2" & sample_type == "standard" & level == lv, .row][1]
+    x$data[.row == w, fi := fi * 2]
+    x <- cyto_transform(x, "log2")          # recompute value from fi
+    for (mn in names(methods)) {
+      new <- do.call(cyto_calibrate, c(list(x), methods[[mn]]))$data
+      old <- ref[[mn]]
+      i <- old$sample_type != "standard" & old$plate == "b1p2"
+      both <- i & is.finite(old$value) & is.finite(new$value)
+      res[[length(res) + 1]] <- data.table(
+        method = mn,
+        shift = if (any(both)) stats::median(abs(new$value[both] - old$value[both]))
+                else NA_real_,
+        lost = mean(is.finite(old$value[i]) & !is.finite(new$value[i])))
+    }
+  }
+}
+rbindlist(res)[, .(mean_abs_shift_log2 = round(mean(shift, na.rm = TRUE), 3),
+                   worst_shift_log2 = round(max(shift, na.rm = TRUE), 3),
+                   values_lost = round(mean(lost), 3),
+                   plate_lost_entirely = sum(is.na(shift))), by = method]
+```
+
+The per-plate 5PL both moves the results and loses values: the bad point
+distorts the whole curve and shrinks the working range, sometimes to nothing
+(the whole plate is lost for that analyte). The monotone interpolation keeps
+its range, but samples in the affected segment can move a lot. The
+shared-shape curve is the most stable: within a kit lot all plates share the curve *shape*, each plate only
+gets shrunken shifts for gain, potency and background
+(`shift = c("x", "y", "bottom")`), and the fit uses a robust (Huber) loss, so
+a single bad well is outvoted. A plate whose standards all failed can even
+borrow the shared curve (flagged `borrowed_curve`). For per-plate fits,
+`robust = TRUE` and `drop_outliers = 1` are available too.
+
+## Normalising before calibrating -- and why it is often undone
+
+A plate correction applied to all wells moves the standards together with
+the samples. A per-plate calibration then re-maps that plate's standards to
+their assigned concentrations, which cancels the correction:
+
+```{r}
+direct <- cyto_calibrate(cyto_example, "5pl")
+normalised_first <- cyto_example |>
+  cyto_transform("log2") |>
+  cyto_normalize("median") |>
+  cyto_calibrate("5pl")
+all.equal(direct$data$value, normalised_first$data$value, tolerance = 1e-4)
+```
+
+To keep a correction, fit fewer curves: **harmonise first, calibrate once.**
+Align the plates of each lot on their standards (affine anchor), align the
+lots on bridging samples, then fit one curve per analyte on the reference
+lot's standards:
+
+```{r}
+h <- cyto_example |>
+  cyto_transform("log2") |>
+  cyto_normalize("anchor", anchors = "standard", scope = "batch",
+                 fit = "affine") |>
+  cyto_correct_batch("bridge") |>
+  cyto_calibrate("5pl", curve_by = NULL, standards = ~ batch == "1")
+cyto_fit(h, "calibrate")$curves[, c("analyte", "lloq", "uloq")]
+```
+
+Now all plates and both lots share one working range, so censoring is no
+longer plate-dependent, and the result is on the reference lot's
+concentration scale.
+
+## Censored values
+
+Signal representations are never censored. Concentrations are, and the
+choice of imputation matters:
+
+* `fraction` (e.g. LLOQ/2) is simple but piles values on one number and
+  shrinks the variance.
+* `tobit` fits a censored normal distribution per analyte (optionally with
+  covariates) and replaces each censored value by its conditional
+  expectation below its limit.
+* `rank_tobit` does the same but keeps the information that is still in the
+  fluorescence signal: within a plate, censored values are ordered by their
+  FI and spread over the quantiles of the truncated distribution. A sample
+  with FI twice the blank stays above one at the blank.
+
+```{r}
+cx <- cyto_calibrate(cyto_example, "5pl")
+cx <- cyto_impute(cx, "rank_tobit")
+cx$data[censored == "left" & plate == "b1p1" & analyte == "IL-10",
+        .(sample_id, fi = round(fi), value = round(value, 2))][order(fi)][1:8]
+```
+
+## Which is best?
+
+That depends on the assay, the layout and what is on every plate -- which is
+why cytokineR treats it as an empirical question. `vignette("benchmarking")`
+shows how to compare strategies on your own data without fooling yourself.

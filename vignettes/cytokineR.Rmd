@@ -1,0 +1,174 @@
+---
+title: "Getting started with cytokineR"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting started with cytokineR}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 7,
+                      fig.height = 4.5, dpi = 80)
+```
+
+cytokineR takes bead-based multiplex immunoassay data (Bio-Rad Bio-Plex,
+Luminex xMAP) from the instrument export to analysis-ready values in small,
+visible steps. Every step is a swappable *method* that records what it
+estimated, so the whole pre-processing can be inspected, reproduced and
+compared with alternatives.
+
+```{r}
+library(cytokineR)
+```
+
+## 1. Import
+
+`read_bioplex()` reads Bio-Plex Manager exports (multi-analyte blocks or one
+sheet per analyte, Excel or CSV) and `read_xponent()` reads Luminex xPONENT
+CSV files. Give several files at once to read one plate per file. Anything
+else can be brought in with `cyto_from_long()` or `cyto_from_wide()`.
+
+```{r}
+f <- system.file("extdata", "bioplex_multi_example.csv", package = "cytokineR")
+plate1 <- read_bioplex(f, plate = "P1", batch = "1")
+plate1
+head(cyto_data(plate1)[, c("well", "sample_type", "sample_id", "level",
+                           "analyte", "fi", "expected_conc", "vendor_conc",
+                           "vendor_flag")])
+```
+
+Sample types come from the Bio-Plex type codes (`S1`..`S8`, `B`, `C1`..,
+`X1`..). The description field becomes the sample id, so name your wells in
+Bio-Plex Manager. If the assigned standard concentrations are not in the
+export, add them with `standards_series()` and `set_standards()` (one table
+per kit lot, using a `batch` column). Study metadata is joined with
+`annotate_samples()`.
+
+The rest of this vignette uses `cyto_example`, a simulated study with two
+batches (kit lots) of three plates, controls on every plate and bridging
+samples measured in both batches. Because it is simulated, the true
+concentrations are known (column `truth`).
+
+```{r}
+x <- cyto_example
+x
+```
+
+## 2. Quality control
+
+Flags never delete data. They mark rows in the `qc` column and, by default,
+stop them from being used to *estimate* corrections (`use_for_fit = FALSE`).
+
+```{r}
+x <- flag_beads(x, min_count = 35)
+x <- flag_replicates(x, max_cv = 0.3, types = c("standard", "control"))
+table(x$data$qc)
+```
+
+PCA of the study samples shows how much of the main variation is plate or
+batch, and which plates stand out:
+
+```{r}
+p <- qc_pca(cyto_transform(x, "log2"))
+p$group_r2
+plot(p, color = "batch")
+```
+
+`qc_plates()` combines robust z-scores of samples, blanks, standards and
+controls with the PCA distance; `qc_controls()` gives Levey-Jennings charts
+with Westgard rules for the control materials:
+
+```{r}
+qc_plates(x)
+plot(qc_controls(x), analytes = c("IL-6", "IL-8", "IP-10"))
+```
+
+## 3. Processing steps
+
+There are four stages, each with several registered methods:
+
+```{r}
+cyto_methods()
+```
+
+Steps can be called directly ...
+
+```{r}
+y <- x |>
+  cyto_transform("log2") |>
+  cyto_normalize("anchor", anchors = "ctrl_low", by = "plate", scope = "batch") |>
+  cyto_correct_batch("bridge")
+y
+```
+
+... and every step keeps its estimates, e.g. the plate offsets estimated by
+the anchor step:
+
+```{r}
+cyto_steps(y)[, c("step", "stage", "method", "note")]
+i <- which(cyto_steps(y)$method == "anchor")
+head(cyto_fit(y, step = i))
+plot_corrections(y, step = i)
+```
+
+Before and after:
+
+```{r, fig.height = 5}
+plot_plates(cyto_transform(x, "log2"), analytes = c("IL-6", "IL-8", "VEGF"))
+plot_plates(y, analytes = c("IL-6", "IL-8", "VEGF"))
+```
+
+## 4. Concentrations
+
+`cyto_calibrate()` converts signal to concentration. Besides the usual
+per-plate 5PL there is a model-free monotone interpolation (`spline`) and a
+shared-shape 5PL that borrows strength across the plates of a kit lot
+(`shared`); see `vignette("signal-scales")`.
+
+```{r}
+cx <- cyto_calibrate(x, "shared")
+plot_standards(cx, analytes = c("IL-6", "IL-10", "TNF-a"))
+head(cyto_fit(cx)$curves)
+```
+
+Values outside the working range are censored (`NA`, with their limits kept)
+and can be imputed:
+
+```{r}
+cx <- cyto_impute(cx, "rank_tobit")
+cx
+```
+
+## 5. Pipelines and output
+
+The same processing written as a pipeline object can be stored, printed,
+re-run and benchmarked:
+
+```{r}
+p <- cyto_pipeline(
+  pipe_custom(function(x) flag_beads(x, 35), label = "beads"),
+  pipe_calibrate("shared"),
+  pipe_impute("rank_tobit"),
+  pipe_correct_batch("bridge"),
+  name = "shared curve"
+)
+p
+z <- run_pipeline(cyto_example, p)
+cyto_steps(z)[, c("step", "stage", "method", "scale_after", "note")]
+```
+
+`cyto_wide()` gives the usual one-row-per-sample table for statistics:
+
+```{r}
+w <- cyto_wide(z)
+head(w[, c("plate", "sample_id", "subject", "time", "IL-6", "IL-8")])
+```
+
+## Where next
+
+* `vignette("signal-scales")` -- what each signal representation and
+  calibration method removes, and why per-plate standard curves are fragile.
+* `vignette("benchmarking")` -- how to find the best pre-processing for your
+  own data with hold-out material and scale-free metrics.
+* `vignette("extending")` -- adding your own methods and metrics.

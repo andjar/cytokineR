@@ -1,0 +1,71 @@
+url: https://andjar.github.io/cytokineR/
+template:
+  bootstrap: 5
+
+articles:
+  - title: Guides
+    navbar: ~
+    contents:
+      - cytokineR
+      - signal-scales
+      - benchmarking
+      - extending
+
+reference:
+  - title: Data container
+    contents:
+      - cyto
+      - cyto_data
+      - cyto_steps
+      - cyto_filter
+      - cyto_bind
+      - cyto_collapse_replicates
+      - selectors
+  - title: Import and annotation
+    contents:
+      - read_bioplex
+      - read_xponent
+      - cyto_from_long
+      - parse_bioplex_value
+      - default_type_rules
+      - standards_series
+      - annotate_samples
+      - set_sample_types
+  - title: Quality control
+    contents:
+      - flag_beads
+      - qc_replicates
+      - qc_pca
+      - qc_plates
+      - qc_controls
+      - qc_variance
+  - title: Processing
+    contents:
+      - cyto_transform
+      - cyto_normalize
+      - cyto_calibrate
+      - cyto_impute
+      - logistic5
+  - title: Pipelines and methods
+    contents:
+      - pipe_step
+      - cyto_pipeline
+      - expand_pipelines
+      - register_cyto_method
+      - cyto_methods
+  - title: Benchmarking and simulation
+    contents:
+      - benchmark_pipelines
+      - benchmark_simulations
+      - holdout_folds
+      - default_metrics
+      - metric_reliability
+      - simulate_cyto
+  - title: Plots
+    contents:
+      - plot_plates
+      - plot_standards
+      - plot_corrections
+  - title: Data
+    contents:
+      - cyto_example
