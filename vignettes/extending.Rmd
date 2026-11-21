@@ -1,0 +1,158 @@
+---
+title: "Extending cytokineR with your own methods"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Extending cytokineR with your own methods}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 7,
+                      fig.height = 4.5, dpi = 80)
+library(cytokineR)
+library(data.table)
+```
+
+Every processing step in cytokineR is a *method* registered under one of four
+stages. The built-in methods use exactly the same mechanism as yours, so a
+new idea can be dropped into pipelines and benchmarked against the existing
+ones in a few lines.
+
+```{r}
+cyto_methods()
+```
+
+## The method contract
+
+A method is a function `function(x, ...)`. It receives the whole
+[cyto] object -- `x$data` is a data.table with one row per well x analyte --
+plus the arguments the user gave, and returns a list:
+
+* `value` (required): the new working value for every row, on a log2 scale;
+* `scale` (optional): `"log2_fi"`, `"log2_ratio"` or `"log2_conc"`;
+* `censored`, `limit_low`, `limit_high`, `qc`, `use_for_fit` (optional);
+* `columns` (optional): further columns to add;
+* `fit` (optional): what was estimated -- stored and returned by
+  `cyto_fit()`, which is what keeps every step auditable;
+* `note` (optional): a short text for the step log.
+
+Two rules: do not modify `x$data` in place (copy first), and use only rows
+with `use_for_fit == TRUE` when estimating anything, so that the benchmark
+can hold material out.
+
+## Example 1: a new signal representation
+
+"Multiple of the lowest standard" -- a curve-free scale anchored at the
+bottom of the standard curve, which is close to the detection limit and so
+often closer to the samples than the blank:
+
+```{r}
+mo_lowest <- function(x, ...) {
+  d <- x$data
+  ref <- d[sample_type == "standard" & use_for_fit & level == max(level, na.rm = TRUE),
+           .(ref = mean(log2(fi))), by = .(plate, analyte)]
+  r <- merge(d[, .(.row, plate, analyte)], ref, by = c("plate", "analyte"),
+             all.x = TRUE)
+  setorder(r, .row)
+  list(value = log2(d$fi) - r$ref, scale = "log2_ratio", fit = ref,
+       note = "log2(FI / lowest standard)",
+       censored = rep("none", nrow(d)))
+}
+register_cyto_method("transform", "mo_lowest", mo_lowest,
+                     description = "Multiple of the lowest standard")
+x <- cyto_transform(cyto_example, "mo_lowest")
+head(cyto_fit(x))
+```
+
+## Example 2: a new plate correction
+
+A robust regression of each plate's control levels on the consensus control
+levels -- a two-point "affine" anchor with the two control materials:
+
+```{r}
+two_point <- function(x, by = "plate", ...) {
+  d <- x$data
+  a <- d[sample_type == "control" & use_for_fit & is.finite(value),
+         .(y = mean(value)), by = c(by, "sample_id", "analyte")]
+  a[, target := median(y), by = .(sample_id, analyte)]
+  tab <- a[, {
+    if (.N == 2 && diff(range(y)) > 0.5) {
+      b <- diff(target[order(y)]) / diff(sort(y))
+      b <- min(max(b, 0.5), 2)
+      list(intercept = mean(target) - b * mean(y), slope = b)
+    } else list(intercept = mean(target - y), slope = 1)
+  }, by = c(by, "analyte")]
+  m <- merge(d[, c(".row", by, "analyte"), with = FALSE], tab,
+             by = c(by, "analyte"), all.x = TRUE)
+  setorder(m, .row)
+  m[is.na(slope), `:=`(intercept = 0, slope = 1)]
+  list(value = m$intercept + m$slope * d$value, fit = tab,
+       note = "two-point control calibration")
+}
+register_cyto_method("normalize", "two_point", two_point,
+                     description = "Affine map from two control levels")
+```
+
+## Benchmark them next to the built-in methods
+
+```{r}
+pipes <- list(
+  "MoB > bridge" = cyto_pipeline(pipe_transform("mob"),
+                                 pipe_correct_batch("bridge")),
+  "mo_lowest > bridge" = cyto_pipeline(pipe_transform("mo_lowest"),
+                                       pipe_correct_batch("bridge")),
+  "log2 > two_point > bridge" = cyto_pipeline(pipe_transform("log2"),
+                                              pipe_normalize("two_point"),
+                                              pipe_correct_batch("bridge"))
+)
+folds <- holdout_folds(cyto_example, "bridge", k = 2)
+bm <- benchmark_pipelines(cyto_example, pipes, holdout = folds,
+                          metrics = default_metrics(bio = ~ time,
+                                                    adjust = ~ subject),
+                          verbose = FALSE)
+bm
+```
+
+(The two-point method uses both control materials, so here half of the
+bridging samples are held out in turn.)
+
+## Custom metrics
+
+A metric is a function `function(x, holdout)` returning a data frame with
+columns `metric`, `analyte`, `value` (and optionally `n`). For example, the
+correlation between two analytes that you expect to move together (in this
+simulated data they are independent, so the values are near zero):
+
+```{r}
+il6_il8 <- function(x, holdout) {
+  w <- cyto_wide(x)
+  data.frame(metric = "cor_IL6_IL8", analyte = "IL-6/IL-8",
+             value = stats::cor(w[["IL-6"]], w[["IL-8"]],
+                                use = "pairwise.complete.obs"))
+}
+m <- c(default_metrics(bio = ~ time, adjust = ~ subject),
+       list(cor = il6_il8))
+bm2 <- benchmark_pipelines(cyto_example, pipes, holdout = folds,
+                           metrics = m, verbose = FALSE)
+bm2$summary[, .(pipeline, cor_IL6_IL8, mean_rank)]
+```
+
+## Custom steps in pipelines
+
+Anything that takes and returns a cyto object can be a pipeline step,
+for example a QC filter:
+
+```{r}
+p <- cyto_pipeline(
+  pipe_custom(function(x) flag_beads(x, min_count = 50), label = "beads50"),
+  pipe_custom(function(x) cyto_filter(x, analyte != "IL-1b"), label = "drop IL-1b"),
+  pipe_transform("mo_lowest")
+)
+run_pipeline(cyto_example, p)
+```
+
+```{r, include = FALSE}
+unregister_cyto_method("transform", "mo_lowest")
+unregister_cyto_method("normalize", "two_point")
+```

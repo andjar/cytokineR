@@ -1,0 +1,192 @@
+---
+title: "Finding the best pre-processing for your data"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Finding the best pre-processing for your data}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 7.5,
+                      fig.height = 5.5, dpi = 80)
+library(cytokineR)
+library(data.table)
+```
+
+There is no single best way to pre-process multiplex cytokine data: it depends
+on the kit, the instrument, the plate layout and what was put on every plate.
+cytokineR therefore treats the choice as an experiment. You describe candidate
+pipelines, and `benchmark_pipelines()` scores them on your own data.
+
+Three ingredients make the comparison meaningful.
+
+## 1. Material that should give the same answer
+
+Without knowing the true concentrations, the best evidence is material that
+was measured more than once: control materials on every plate, replicate
+wells, and samples re-measured in several batches ("bridging samples"). A good
+pipeline makes repeated measurements of the same material agree -- *without*
+erasing the differences between study samples.
+
+## 2. Metrics that do not depend on the scale
+
+Pipelines produce different scales (log2 FI, multiples of blank,
+concentrations), so raw SDs or CVs are not comparable. All metrics are
+scale-free:
+
+| metric | meaning | better |
+|---|---|---|
+| `reliability_plate` | 1 - (technical variance of repeated material across plates) / (variance of the study samples) | higher |
+| `reliability_batch` | the same across batches | higher |
+| `plate_r2` | adjusted partial R^2 of plate among study samples (within strata) | lower (for randomised layouts) |
+| `bio_r2` | adjusted partial R^2 of known biology, e.g. time point within subject | higher |
+| `detected` | fraction of study-sample values that are quantified, not censored | higher |
+| `truth_rho`, `truth_rmse` | agreement with the true concentrations (simulations only) | higher / lower |
+
+`reliability` is a signal-to-noise ratio (an intra-class correlation): it is
+1 when repeats agree perfectly and 0 when technical noise is as large as the
+whole spread of the study. `bio_r2` guards against over-correction: a method
+that flattens everything would score well on agreement but lose biology.
+`detected` guards against imputation hiding problems.
+
+## 3. Hold-out: never grade a method on what it was fitted to
+
+If a pipeline anchors every plate to control *A*, control *A* will agree
+perfectly across plates by construction -- that says nothing about the
+samples. `benchmark_pipelines(holdout = ...)` therefore sets
+`use_for_fit = FALSE` for the held-out material before each pipeline runs (no
+method may use it for estimation) and computes the reliability metrics on
+exactly that material.
+
+## A first benchmark
+
+`expand_pipelines()` builds every combination of the alternatives per stage:
+
+```{r}
+grid <- expand_pipelines(
+  signal = list(log2 = pipe_transform("log2"),
+                MoB  = pipe_transform("mob"),
+                MoS  = pipe_transform("mos", by_conc = TRUE)),
+  plate  = list(none   = NULL,
+                median = pipe_normalize("median", within = "time"),
+                ctrl   = pipe_normalize("anchor", anchors = "ctrl_low",
+                                        scope = "batch")),
+  batch  = list(none = NULL, bridge = pipe_correct_batch("bridge"))
+)
+length(grid)
+head(names(grid))
+```
+
+Add some concentration-based strategies:
+
+```{r}
+conc <- list(
+  "5PL/plate > Tobit > bridge" =
+    cyto_pipeline(pipe_calibrate("5pl"), pipe_impute("tobit"),
+                  pipe_correct_batch("bridge")),
+  "shared 5PL > rank-Tobit > bridge" =
+    cyto_pipeline(pipe_calibrate("shared"), pipe_impute("rank_tobit"),
+                  pipe_correct_batch("bridge")),
+  "harmonise > one curve > rank-Tobit" =
+    cyto_pipeline(pipe_transform("log2"),
+                  pipe_normalize("anchor", anchors = "standard",
+                                 scope = "batch", fit = "affine"),
+                  pipe_correct_batch("bridge"),
+                  pipe_calibrate("5pl", curve_by = NULL,
+                                 standards = ~ batch == "1"),
+                  pipe_impute("rank_tobit"))
+)
+```
+
+Run them, holding out the high control (the low control may be used as an
+anchor):
+
+```{r}
+bm <- benchmark_pipelines(cyto_example, c(grid, conc), holdout = "ctrl_high",
+                          metrics = default_metrics(bio = ~ time,
+                                                    adjust = ~ subject),
+                          verbose = FALSE)
+bm$summary[1:10, .(pipeline,
+                   rel_plate = round(reliability_plate, 3),
+                   rel_batch = round(reliability_batch, 3),
+                   plate_r2 = round(plate_r2, 3),
+                   bio_r2 = round(bio_r2, 3),
+                   detected = round(detected, 2),
+                   mean_rank)]
+```
+
+Each point below is one analyte; the diamond is the mean.
+
+```{r, fig.height = 7}
+top <- bm$summary$pipeline[c(1:6, nrow(bm$summary) - 0:1)]
+bm_top <- bm
+bm_top$results <- bm$results[pipeline %in% top & metric != "truth_rmse"]
+bm_top$summary <- bm$summary[pipeline %in% top]
+plot(bm_top)
+```
+
+### Cross-fitting
+
+With several kinds of repeated material, hold each out in turn. Bridging
+samples are usually the only anchor between batches, so they are split into
+folds with `holdout_folds()`: the batch correction is fitted on half of them
+and judged on the other half.
+
+```{r}
+folds <- c(list(high_ctrl = "ctrl_high"),
+           holdout_folds(cyto_example, "bridge", k = 2, prefix = "bridges_"))
+lengths(folds)
+cf <- benchmark_pipelines(cyto_example, grid[c("log2 > ctrl", "log2 > ctrl > bridge",
+                                               "MoB > median > bridge",
+                                               "MoS > bridge")],
+                          holdout = folds, verbose = FALSE)
+cf$results[metric == "reliability_batch",
+           .(reliability_batch = round(mean(value), 3)), by = .(fold, pipeline)]
+```
+
+On the held-out bridging samples, the pipeline without batch correction is
+clearly worse -- evidence that the bridge correction generalises to samples
+it was not fitted on.
+
+## Developing methods against the truth
+
+Real data cannot tell you *why* a method fails. `simulate_cyto()` generates
+studies with known concentrations under a physical model of plate effects
+(gain, potency, background), kit-lot errors, bad standard wells and low
+abundance, and `benchmark_simulations()` runs pipelines over scenarios:
+
+```{r}
+pipes <- c(grid[c("log2", "log2 > median > bridge", "MoB > bridge",
+                  "log2 > ctrl > bridge")], conc[c(1, 2)])
+scen <- list(default = list(plates_per_batch = 3),
+             bad_standards = list(plates_per_batch = 3,
+                                  bad_standard_prob = 0.15),
+             confounded = list(plates_per_batch = 3, design = "by_time"))
+bs <- benchmark_simulations(pipes, scen, reps = 1, verbose = FALSE)
+plot(bs, metric = "truth_rho")
+```
+
+A larger study (6 scenarios, 5 data sets each, 11 pipelines) is in
+`system.file("scripts", "simulation_study.R", package = "cytokineR")`.
+Conclusions from simulations are only as good as the simulator's model, so
+use them to generate hypotheses and to debug methods, and confirm on real
+data with hold-out material.
+
+## Designing plates so that methods can be compared
+
+The benchmark can only be as good as the repeated material on the plates. For
+studies run with cytokineR in mind:
+
+* **A pooled control on every plate**, in duplicate, ideally at two levels
+  (a pool of study-like samples, plus a spiked or concentrated pool). One can
+  serve as anchor and the other as hold-out.
+* **Bridging samples** when the study spans several kit lots or runs:
+  8--10 study samples re-measured in every batch, covering the range of
+  concentrations.
+* **Randomised layout** across plates (stratified by group and time point),
+  so that sample-based normalisation and `plate_r2` are meaningful.
+* **Standards and blanks in duplicate** on every plate, and the lot-specific
+  assigned concentrations recorded per batch.
+* **Named wells** in the instrument software, so that sample ids survive the
+  export.
