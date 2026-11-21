@@ -1,0 +1,10 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+*.Rcheck/
+cytokineR_*.tar.gz
+docs/
+inst/doc
+vignettes/*.html
+vignettes/*.R
