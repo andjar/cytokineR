@@ -177,8 +177,11 @@ test_that("select_pipeline() chooses on training and reports test", {
   expect_false(sel2$maximize)
   expect_equal(sel2$scores[selected == TRUE, train], min(sel2$scores$train))
   expect_error(select_pipeline(s, steps, auc, fixed = "log2"), "test set")
-  expect_error(select_pipeline(s, steps, mean, test = test, fixed = "log2"),
-               "'test' and 'on'")
+  expect_error(select_pipeline(s, steps, function(x) stop("bad"),
+                               test = test, fixed = "log2"),
+               "could not be computed")
+  expect_error(select_pipeline(s, steps, "auc", test = test, fixed = "log2"),
+               "list of functions")
 })
 
 test_that("benchmark_pipelines() hides the test set and passes it on", {
@@ -196,4 +199,119 @@ test_that("benchmark_pipelines() hides the test set and passes it on", {
   expect_identical(sort(got), sort(test))
   expect_equal(bm$results$value, 0)
   expect_identical(bm$test, test)
+})
+
+test_that("select_pipeline() combines several criteria", {
+  s <- small_sim()
+  test <- split_samples(s, prop = 0.4, by = "subject", strata = "batch")
+  steps <- list(log2 = pipe_transform("log2"),
+                plate = pipe_normalize("median", within = "time"),
+                batch = pipe_correct_batch("bridge"))
+  crit <- list(
+    batch = sample_metric(metric_plate_effect, by = "batch", within = "time"),
+    biology = sample_metric(metric_bio, ~ time, adjust = ~ subject),
+    control = default_metrics()$reliability_batch)
+  sel <- select_pipeline(s, steps, crit, test = test, fixed = "log2",
+                         holdout = "ctrl_high")
+  expect_equal(sel$criteria$criterion, names(crit))
+  expect_equal(sel$criteria$direction, c(-1, 1, 1))
+  expect_true(all(c("batch_train", "batch_test", "biology_train",
+                    "control_test", "mean_rank_train") %in%
+                    names(sel$scores)))
+  # mean rank by hand
+  sc <- sel$scores
+  r1 <- rank(sc$batch_train)
+  r2 <- rank(-sc$biology_train)
+  r3 <- rank(-sc$control_train)
+  expect_equal(sc$mean_rank_train, (r1 + r2 + r3) / 3)
+  expect_true(sc[selected == TRUE, mean_rank_train] == min(sc$mean_rank_train))
+  # a criterion without `on` gives the same value on training and test
+  expect_equal(sc$control_train, sc$control_test)
+  # per-criterion values on training are computed on training samples only
+  h <- .hide_rows(s, holdout = "ctrl_high", test = test)
+  out <- run_pipeline(h, sel$pipeline)
+  tr <- crit$batch(out, test = test, on = "train")
+  expect_equal(sc[selected == TRUE, batch_train], mean(tr$value))
+  expect_output(print(sel), "mean rank")
+  expect_s3_class(plot(sel), "ggplot")
+  # weights and resolution
+  w <- select_pipeline(s, steps, crit, test = test, fixed = "log2",
+                       holdout = "ctrl_high",
+                       weights = c(batch = 0, biology = 0, control = 1))
+  expect_equal(w$scores[selected == TRUE, control_train],
+               max(w$scores$control_train))
+  coarse <- select_pipeline(s, steps, crit, test = test, fixed = "log2",
+                            holdout = "ctrl_high", resolution = 10)
+  # everything ties: the simplest pipeline wins
+  expect_equal(coarse$selected, "none")
+})
+
+test_that("sample_metric() restricts to training or test samples", {
+  s <- small_sim()
+  x <- cyto_transform(s, "log2")
+  test <- split_samples(s, prop = 0.5, by = "subject")
+  f <- sample_metric(metric_detection)
+  n_test <- f(x, test = test)$n
+  n_train <- f(x, test = test, on = "train")$n
+  n_all <- f(x, test = test, on = "all")$n
+  expect_equal(n_test + n_train, n_all)
+  expect_equal(n_test[1], nrow(x$data[sample_id %in% test &
+                                        analyte == "IL-6"]))
+  expect_equal(f(x)$n, n_all)
+  expect_error(sample_metric("x"), "function")
+})
+
+test_that("split_samples() can hold out whole groups", {
+  s <- small_sim()
+  tb <- split_samples(s, by = "batch", values = "2")
+  d <- s$data[sample_type == "unknown"]
+  expect_true(all(d[sample_id %in% tb, batch] == "2"))
+  # bridging samples stay in training
+  expect_false(any(tb %in% d$sample_id[select_rows(d, "bridge")]))
+  expect_error(split_samples(s, by = "batch", values = "9"), "No study")
+})
+
+test_that("finalise_pipeline(), processing_report() and export_dataset()", {
+  s <- small_sim()
+  test <- split_samples(s, prop = 0.4, by = "subject", strata = "batch")
+  steps <- list(log2 = pipe_transform("log2"),
+                plate = pipe_normalize("median", within = "time"),
+                batch = pipe_correct_batch("bridge"))
+  crit <- list(
+    batch = sample_metric(metric_plate_effect, by = "batch", within = "time"),
+    biology = sample_metric(metric_bio, ~ time, adjust = ~ subject))
+  sel <- select_pipeline(s, steps, crit, test = test, fixed = "log2",
+                         resolution = 0.01)
+  fin <- finalise_pipeline(s, sel)
+  expect_equal(fin$data$value, run_pipeline(s, sel$pipeline)$data$value)
+  expect_identical(fin$meta$selection$pipeline, sel$selected)
+  expect_true(fin$meta$selection$refit)
+  held <- finalise_pipeline(s, sel, refit = FALSE)
+  expect_false(held$meta$selection$refit)
+  expect_equal(held$data$value,
+               run_pipeline(.hide_rows(s, test = test),
+                            sel$pipeline)$data$value)
+  expect_equal(finalise_pipeline(s, sel$pipeline)$data$value,
+               fin$data$value)
+  rep <- processing_report(fin)
+  expect_s3_class(rep, "cyto_report")
+  txt <- paste(rep, collapse = "\n")
+  expect_match(txt, "How the pipeline was chosen")
+  expect_match(txt, sel$selected, fixed = TRUE)
+  expect_match(txt, "unseen test set")
+  expect_match(txt, "counted as ties")
+  expect_output(print(rep), "Processing steps")
+  plain <- paste(processing_report(cyto_transform(s, "log2")),
+                 collapse = "\n")
+  expect_false(grepl("How the pipeline was chosen", plain))
+  dir <- withr::local_tempdir()
+  p <- export_dataset(fin, dir, name = "study")
+  expect_true(all(file.exists(p)))
+  w <- utils::read.csv(p[["wide"]], check.names = FALSE)
+  expect_true(all(unique(s$data$analyte) %in% names(w)))
+  expect_equal(nrow(w), nrow(cyto_wide(fin)))
+  expect_match(paste(readLines(p[["report"]]), collapse = "\n"),
+               "How the pipeline was chosen")
+  expect_s3_class(readRDS(p[["rds"]]), "cyto")
+  expect_error(finalise_pipeline(s, list()), "select_pipeline")
 })

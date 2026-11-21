@@ -21,9 +21,21 @@
   `waterfall_lattice()` and `benchmark_pipelines()` hides them from every
   fitting step and passes them to the statistic.
 * `select_pipeline()` chooses the best combination of steps on the training
-  samples and only then scores it on the test samples, reporting the
-  optimism of the choice; `plot()` shows the training against the test score
-  of every pipeline, and `$pipeline` is the chosen pipeline.
+  samples and only then scores it on the test samples. It takes several
+  criteria (e.g. residual batch and plate effects, biology kept, control
+  agreement) combined by weighted mean rank; `resolution` treats differences
+  too small to matter as ties, which go to the simpler pipeline. `plot()`
+  shows the training against the test score of every pipeline per
+  criterion; `$pipeline` is the chosen pipeline.
+* `sample_metric()` evaluates any `metric_*()` on the training or the test
+  samples; `pool_test = TRUE` compares a held-out cohort with the rest.
+* `split_samples(values = )` holds out a whole cohort or batch.
+* `finalise_pipeline()` applies the chosen pipeline (refitted on all samples
+  or not) and records how it was chosen; `processing_report()` writes a
+  methods-ready Markdown account of the data, steps, selection and censoring;
+  `export_dataset()` writes wide and long CSV files, the report and the RDS.
+* New `vignette("harmonising")`: from raw plates to one analysis-ready
+  dataset across batches and cohorts.
 
 # cytokineR 0.1.0
 

@@ -56,7 +56,8 @@ w <- cyto_wide(x)    # one row per sample, one column per analyte
 | calibration | `cyto_calibrate()` | `5pl`, `4pl` (optionally robust), `spline` (monotone, no extrapolation), `shared` (robust shared-shape 5PL with shrunken gain/potency/background shifts); per plate, per batch, or one curve per study |
 | censored values | `cyto_impute()` | `fraction`, `tobit` (covariates, draws), `rank_tobit` |
 | comparison | `cyto_pipeline()`, `expand_pipelines()`, `benchmark_pipelines()`, `benchmark_simulations()`, `simulate_cyto()` | hold-out benchmarking with scale-free metrics; simulator with known truth |
-| attribution and selection | `waterfall_lattice()`, `model_statistic()`, `select_pipeline()`, `split_samples()`, `metric_effect()` | every on/off combination of the steps; each step's waterfall change, order-free Shapley share and range across contexts; any model (`lm()`, `glm()`, ...) as the statistic; choose on training samples, judge on unseen test samples |
+| attribution and selection | `waterfall_lattice()`, `model_statistic()`, `sample_metric()`, `select_pipeline()`, `split_samples()`, `metric_effect()` | every on/off combination of the steps; each step's waterfall change, order-free Shapley share and range across contexts; any model (`lm()`, `glm()`, ...) as a criterion; choose on training samples, judge on unseen test samples (random subjects or a whole cohort) |
+| final dataset | `finalise_pipeline()`, `processing_report()`, `export_dataset()` | apply the chosen pipeline, write wide/long CSV + RDS with a methods-ready report of how the data were made and chosen |
 
 New methods are registered with `register_cyto_method()` and are immediately
 usable in pipelines and benchmarks (`vignette("extending")`).
@@ -120,27 +121,47 @@ works, for example the effect you will report
 (`metric_effect(x, ~ time, adjust = ~ subject)`, with p-values marking which
 pipelines reach significance). See `vignette("waterfall-lattice")`.
 
-### Optimise the pipeline, but don't overfit
+## From raw plates to one analysis-ready dataset
 
-Any model can be attached (`model_statistic()` wraps `lm()`, `glm()`,
-`lmer()`, ...), and the choice of pipeline can be checked on samples that
-nothing has seen:
+The aim is a pipeline that harmonises batches and cohorts, keeps the
+biology, and was not chosen by overfitting, followed by a dataset that
+documents itself. `vignette("harmonising")` walks through it:
 
 ```r
-test <- split_samples(x_raw, prop = 0.3, by = "subject")   # unseen subjects
-auc  <- model_statistic(outcome ~ ., model = glm, family = binomial,
-                        data = "wide", cv_by = "subject")
-sel  <- select_pipeline(x_raw, steps, auc, test = test, fixed = "log2")
-sel            # chosen on training (cross-validated), then scored on test
-plot(sel)      # training vs test score of every pipeline
-x <- run_pipeline(x_raw, sel$pipeline)
+steps <- list(log2   = pipe_transform("log2"),
+              median = pipe_normalize("median", within = "time"),
+              ctrl   = pipe_normalize("anchor", anchors = "ctrl_low", scope = "batch"),
+              bridge = pipe_correct_batch("bridge"))
+
+# 1. unseen test set: whole subjects, every batch/cohort represented
+test <- split_samples(x_raw, prop = 0.4, by = "subject", strata = "batch")
+
+# 2. criteria: harmonised (low batch/plate R2) but biology kept
+criteria <- list(
+  batch   = sample_metric(metric_plate_effect, by = "batch", within = "time"),
+  plate   = sample_metric(metric_plate_effect, by = "plate", within = "time"),
+  biology = sample_metric(metric_bio, ~ time, adjust = ~ subject),
+  control = default_metrics()$reliability_batch)          # held-out control
+
+# 3. choose on training samples only; differences < 0.01 are ties -> simpler wins
+sel <- select_pipeline(x_raw, steps, criteria, test = test, fixed = "log2",
+                       holdout = "ctrl_high", resolution = 0.01)
+sel; plot(sel)       # training vs unseen-test score of every pipeline
+
+# 4. the dataset, with its documentation
+final <- finalise_pipeline(x_raw, sel)
+processing_report(final)                 # methods-ready Markdown
+export_dataset(final, "output/", name = "study")
 ```
 
-The test samples get `use_for_fit = FALSE` in every pipeline, so no
-normalisation, batch correction or imputation is fitted on them. The
-pipeline is chosen on the training samples alone, so the test score of the
-chosen pipeline is an honest estimate. `test` works the same way in
-`waterfall_lattice()` and `benchmark_pipelines()`.
+The test samples get `use_for_fit = FALSE` in every pipeline: no
+normalisation, batch correction, imputation, model or choice uses them, so
+the chosen pipeline's test scores are an honest estimate. To check that the
+pipeline will work for a cohort that arrives later, hold out a whole cohort
+or batch with `split_samples(x_raw, by = "cohort", values = "C")`. Any model
+can be a criterion, through `model_statistic()` (`lm()`, `glm()`, `lmer()`,
+...): a coefficient, or a prediction score cross-validated within the
+training samples and checked on the test samples.
 
 ## What the simulations suggest
 
@@ -189,9 +210,11 @@ real data before choosing.
 * `vignette("signal-scales")` -- plate effects, signal representations, why
   standard curves are fragile, harmonise-then-calibrate
 * `vignette("benchmarking")` -- comparing pipelines on your own data
+* `vignette("harmonising")` -- from raw plates to one analysis-ready
+  dataset across batches and cohorts: choosing the pipeline without
+  overfitting, exporting it with a processing report
 * `vignette("waterfall-lattice")` -- how much each step contributes, in
-  every combination of the other steps; attaching a model; choosing a
-  pipeline without overfitting
+  every combination of the other steps; attaching a model
 * `vignette("extending")` -- your own methods and metrics
 
 ## Status

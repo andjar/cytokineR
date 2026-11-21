@@ -11,6 +11,7 @@ split_samples(
   strata = NULL,
   types = "unknown",
   exclude = "bridge",
+  values = NULL,
   seed = 1
 )
 }
@@ -30,6 +31,10 @@ taken from each unit's first row.}
 
 \item{exclude}{Selector of rows whose samples must stay in training
 (default: bridging samples).}
+
+\item{values}{Optional values of \code{by} to put in the test set, instead of a
+random share: e.g. \verb{by = "cohort", values = "C"} holds out a whole cohort
+(leave-one-cohort-out), \verb{by = "batch", values = "2"} a whole batch.}
 
 \item{seed}{Random seed for the split.}
 }

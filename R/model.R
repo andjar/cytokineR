@@ -365,6 +365,9 @@ model_statistic <- function(formula, model = stats::lm, ..., term = NULL,
 #' @param types Sample types that can be in the test set.
 #' @param exclude Selector of rows whose samples must stay in training
 #'   (default: bridging samples).
+#' @param values Optional values of `by` to put in the test set, instead of a
+#'   random share: e.g. `by = "cohort", values = "C"` holds out a whole cohort
+#'   (leave-one-cohort-out), `by = "batch", values = "2"` a whole batch.
 #' @param seed Random seed for the split.
 #' @return A character vector of test `sample_id`s, usable as a selector.
 #' @examples
@@ -372,14 +375,26 @@ model_statistic <- function(formula, model = stats::lm, ..., term = NULL,
 #' length(test)
 #' @export
 split_samples <- function(x, prop = 0.3, by = "sample_id", strata = NULL,
-                          types = "unknown", exclude = "bridge", seed = 1) {
+                          types = "unknown", exclude = "bridge", values = NULL,
+                          seed = 1) {
   .check_cyto(x)
-  if (!is.numeric(prop) || length(prop) != 1L || prop <= 0 || prop >= 1) {
-    stop("'prop' must be between 0 and 1.", call. = FALSE)
-  }
   d <- x$data
   .check_by(d, c(by, strata))
   ex <- if (is.null(exclude)) rep(FALSE, nrow(d)) else select_rows(d, exclude)
+  if (!is.null(values)) {
+    # whole groups (e.g. a cohort); excluded samples (bridges) stay in training
+    exs <- unique(d$sample_id[ex])
+    out <- d[sample_type %in% types & as.character(get(by)) %in%
+               as.character(values) & !sample_id %in% exs, sample_id]
+    if (!length(out)) {
+      stop("No study samples with ", by, " in: ",
+           paste(values, collapse = ", "), call. = FALSE)
+    }
+    return(sort(unique(out)))
+  }
+  if (!is.numeric(prop) || length(prop) != 1L || prop <= 0 || prop >= 1) {
+    stop("'prop' must be between 0 and 1.", call. = FALSE)
+  }
   bad_units <- unique(d[[by]][ex])
   cand <- d[sample_type %in% types & !is.na(get(by)) &
               !get(by) %in% bad_units]

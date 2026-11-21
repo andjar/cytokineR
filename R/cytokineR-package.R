@@ -30,6 +30,9 @@
 #' [model_statistic()] attaches any model (`lm()`, `glm()`, ...) to it, and
 #' [select_pipeline()] chooses a pipeline on training samples and checks the
 #' choice on unseen test samples ([split_samples()]).
+#' [finalise_pipeline()], [processing_report()] and [export_dataset()]
+#' produce the analysis dataset with a record of how it was made (see
+#' `vignette("harmonising")`).
 #'
 #' @keywords internal
 "_PACKAGE"
@@ -78,5 +81,6 @@ utils::globalVariables(c(
   "from_value", "to_value", "delta", "weight", "waterfall", "shapley",
   "flips", "none", "total", "sig",
   # model statistics and pipeline selection
-  "se", "train", "rank_train", "rank_test", "selected", "what"
+  "se", "train", "rank_train", "rank_test", "selected", "what",
+  "mean_rank_train", "mean_rank_test", "criterion", "better", "imputed", "vj"
 ))

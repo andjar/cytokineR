@@ -8,13 +8,15 @@
 select_pipeline(
   x,
   steps,
-  statistic,
+  criteria,
   test,
   fixed = character(),
   route = NULL,
   holdout = NULL,
+  weights = NULL,
   maximize = NULL,
   analytes = NULL,
+  resolution = NULL,
   max_steps = 8,
   verbose = FALSE
 )
@@ -27,27 +29,42 @@ select_pipeline(
 \item{steps, fixed, route, holdout, max_steps, verbose}{As in
 \code{\link[=waterfall_lattice]{waterfall_lattice()}}.}
 
-\item{statistic}{A \code{\link[=model_statistic]{model_statistic()}} (or any function with arguments
-\code{test} and \code{on} that follows the same rules).}
+\item{criteria}{A statistic or a named list of statistics; see Criteria.}
 
 \item{test}{The test set: a selector or a vector of \code{sample_id}s, e.g. from
 \code{\link[=split_samples]{split_samples()}}.}
 
-\item{maximize}{Choose the pipeline with the largest training score?
-Default: \code{TRUE}, except for metrics where lower is better (\code{pred_rmse}).}
+\item{weights}{Optional named numeric vector of criterion weights (default
+1 each).}
 
-\item{analytes}{Analytes whose mean score decides (default all).}
+\item{maximize}{Optional named logical vector: is higher better? Default
+from the metric name (\verb{plate_r2*}, \code{pred_rmse} and \code{truth_rmse} are
+minimised, everything else maximised).}
+
+\item{analytes}{Analytes whose mean score counts (default all).}
+
+\item{resolution}{Optional smallest difference that counts, per criterion
+(named) or for all; see Criteria.}
 
 \item{...}{Unused.}
 }
 \value{
-An object of class \code{cyto_selection}: a list with \code{scores} (one row
-per pipeline: mean \code{train} and \code{test} score over the analytes, their
-ranks, and \code{selected}), \code{selected} (the chosen pipeline's name),
-\code{pipeline} (the chosen \code{\link[=cyto_pipeline]{cyto_pipeline()}}, ready for \code{\link[=run_pipeline]{run_pipeline()}}),
-and \code{train} and \code{test} (\code{cyto_lattice} objects for each). Has \code{print()}
-and \code{plot()} methods; \code{plot()} puts the training score against the test
-score of every pipeline.
+An object of class \code{cyto_selection}: a list with
+\itemize{
+\item \code{scores}: one row per pipeline with each criterion's mean over analytes
+on training and test samples (\verb{<criterion>_train},
+\verb{<criterion>_test}), the mean ranks (\code{rank_train}, \code{rank_test}) and
+\code{selected}; with a single criterion also \code{train} and \code{test};
+\item \code{criteria}: name, metric, direction and weight of each criterion;
+\item \code{selected} (name) and \code{pipeline} (the chosen \code{\link[=cyto_pipeline]{cyto_pipeline()}});
+\item \code{lattices}: a \code{cyto_lattice} per criterion and split (\code{train}/\code{test}
+for a single criterion);
+\item the test set and settings, used by \code{\link[=finalise_pipeline]{finalise_pipeline()}} and
+\code{\link[=processing_report]{processing_report()}}.
+}
+
+Has \code{print()} and \code{plot()} methods; \code{plot()} puts the training score
+against the test score of every pipeline, per criterion.
 }
 \description{
 Trying many pre-processing combinations and keeping the one that gives the
@@ -55,10 +72,9 @@ best result is a way to overfit: the winner is partly the pipeline that
 happened to fit the noise. \code{select_pipeline()} keeps the choice honest. It
 runs every on/off combination of the optional steps (as
 \code{\link[=waterfall_lattice]{waterfall_lattice()}}) with the test samples hidden from every fitting
-step, scores each pipeline on the \strong{training} samples (cross-validated
-for prediction models), picks the best, and only then looks at how that
-choice does on the \strong{test} samples, which no pre-processing step, model
-fit or choice has seen.
+step, scores each pipeline on the \strong{training} samples, picks the best, and
+only then looks at how that choice does on the \strong{test} samples, which no
+pre-processing step, model fit or choice has seen.
 }
 \details{
 The gap between the training and test scores of the chosen pipeline is the
@@ -66,19 +82,57 @@ optimism of the choice. The test scores of all pipelines are reported too,
 to show how much the choice mattered, but choosing by them would overfit
 the test set: they are for reading, not for choosing.
 }
+\section{Criteria}{
+
+\code{criteria} is one statistic or a named list of them, typically a mix of
+\itemize{
+\item \strong{harmonisation}: residual batch, cohort or plate effects among the study
+samples, e.g. \code{sample_metric(metric_plate_effect, by = "batch", within = "time")} (lower is better);
+\item \strong{biology kept}: e.g. \code{sample_metric(metric_bio, ~ time, adjust = ~ subject)} or a \code{\link[=model_statistic]{model_statistic()}} coefficient or prediction score
+(higher is better);
+\item \strong{agreement of repeated material}: e.g.
+\code{default_metrics()$reliability_batch} with \code{holdout = "ctrl_high"}.
+}
+
+Each criterion is evaluated per pipeline on the training samples
+(\code{on = "train"}) and on the test samples (\code{on = "test"}); see
+\code{\link[=sample_metric]{sample_metric()}} and \code{\link[=model_statistic]{model_statistic()}}. A criterion without an \code{on}
+argument, such as the reliability of held-out control material, gives the
+same value for both -- that material is then used for choosing, so its
+score is not an independent check.
+
+Pipelines are ranked per criterion (respecting whether higher or lower is
+better), and the ranks are averaged with \code{weights}. The pipeline with the
+best mean training rank is chosen; ties go to the pipeline with fewer
+steps.
+
+Ranks treat a difference of 0.001 like a difference of 0.1. Many
+corrections often end up practically equal, and choosing between them by
+the third decimal chases noise. With \code{resolution}, differences smaller
+than the resolution count as ties (values are rounded to it before
+ranking), so the simpler pipeline wins unless a more complex one is
+better by a margin you care about -- a guard against overfitting the
+choice. Give one number for all criteria or a named vector, on each
+metric's own scale (e.g. \code{c(batch = 0.01, biology = 0.01)}).
+}
+
 \examples{
-test <- split_samples(cyto_example, prop = 0.4, by = "subject")
+test <- split_samples(cyto_example, prop = 0.4, by = "subject",
+                      strata = "batch")
 steps <- list(log2   = pipe_transform("log2"),
               median = pipe_normalize("median", within = "time"),
               bridge = pipe_correct_batch("bridge"))
-auc <- model_statistic(factor(time) ~ ., model = glm, family = binomial,
-                       data = "wide", cv_by = "subject")
-sel <- select_pipeline(cyto_example, steps, auc, test = test,
-                       fixed = "log2")
+sel <- select_pipeline(
+  cyto_example, steps, fixed = "log2", test = test,
+  criteria = list(
+    batch   = sample_metric(metric_plate_effect, by = "batch",
+                            within = "time"),
+    biology = sample_metric(metric_bio, ~ time, adjust = ~ subject)))
 sel
 plot(sel)
 sel$pipeline
 }
 \seealso{
-\code{\link[=model_statistic]{model_statistic()}}, \code{\link[=split_samples]{split_samples()}}, \code{\link[=waterfall_lattice]{waterfall_lattice()}}
+\code{\link[=split_samples]{split_samples()}}, \code{\link[=sample_metric]{sample_metric()}}, \code{\link[=model_statistic]{model_statistic()}},
+\code{\link[=finalise_pipeline]{finalise_pipeline()}}, \code{vignette("harmonising")}
 }

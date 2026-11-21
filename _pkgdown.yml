@@ -8,6 +8,7 @@ articles:
     contents:
       - cytokineR
       - signal-scales
+      - harmonising
       - benchmarking
       - waterfall-lattice
       - extending
@@ -61,12 +62,18 @@ reference:
       - holdout_folds
       - default_metrics
       - metric_reliability
-      - waterfall_lattice
-      - model_statistic
-      - select_pipeline
-      - split_samples
-      - metric_effect
       - simulate_cyto
+  - title: Choosing a pipeline and producing the dataset
+    contents:
+      - split_samples
+      - select_pipeline
+      - sample_metric
+      - model_statistic
+      - waterfall_lattice
+      - metric_effect
+      - finalise_pipeline
+      - processing_report
+      - export_dataset
   - title: Plots
     contents:
       - plot_plates
