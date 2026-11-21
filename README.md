@@ -56,6 +56,7 @@ w <- cyto_wide(x)    # one row per sample, one column per analyte
 | calibration | `cyto_calibrate()` | `5pl`, `4pl` (optionally robust), `spline` (monotone, no extrapolation), `shared` (robust shared-shape 5PL with shrunken gain/potency/background shifts); per plate, per batch, or one curve per study |
 | censored values | `cyto_impute()` | `fraction`, `tobit` (covariates, draws), `rank_tobit` |
 | comparison | `cyto_pipeline()`, `expand_pipelines()`, `benchmark_pipelines()`, `benchmark_simulations()`, `simulate_cyto()` | hold-out benchmarking with scale-free metrics; simulator with known truth |
+| attribution | `waterfall_lattice()`, `metric_effect()` | every on/off combination of the steps; each step's waterfall change, order-free Shapley share and range across contexts |
 
 New methods are registered with `register_cyto_method()` and are immediately
 usable in pipelines and benchmarks (`vignette("extending")`).
@@ -87,6 +88,37 @@ bm; plot(bm)
   potency and background effects, kit-lot errors in the standards, bad
   standard wells, low-abundance analytes and confounded layouts;
   `benchmark_simulations()` runs pipelines across such scenarios.
+
+## Which step did it?
+
+A table of results "after each step", or a waterfall chart, credits each step
+with the change it caused *in that order*. Steps that partly do the same job
+split the credit by order: the first looks decisive, the next one useless.
+`waterfall_lattice()` runs every on/off combination of the optional steps
+(2^K pipelines) and computes a statistic for each:
+
+```r
+steps <- list(
+  log2   = pipe_transform("log2"),
+  median = pipe_normalize("median", within = "time"),
+  ctrl   = pipe_normalize("anchor", anchors = "ctrl_low", scope = "batch"),
+  bridge = pipe_correct_batch("bridge")
+)
+lat <- waterfall_lattice(x_raw, steps, fixed = "log2",
+                         statistic = default_metrics()$reliability_batch,
+                         holdout = "ctrl_high")
+lat                        # waterfall change vs Shapley share per step
+plot(lat)                  # every pipeline a node, the waterfall route in bold
+plot(lat, "contributions") # each step's change in every context
+```
+
+In the example data, the waterfall credits median plate normalisation with
+almost all of the gain in batch-to-batch reliability and bridging correction
+with almost nothing. Their order-free Shapley shares are about equal, because
+centring every plate also removes most of the batch shift. Any statistic
+works, for example the effect you will report
+(`metric_effect(x, ~ time, adjust = ~ subject)`, with p-values marking which
+pipelines reach significance). See `vignette("waterfall-lattice")`.
 
 ## What the simulations suggest
 
@@ -135,6 +167,8 @@ real data before choosing.
 * `vignette("signal-scales")` -- plate effects, signal representations, why
   standard curves are fragile, harmonise-then-calibrate
 * `vignette("benchmarking")` -- comparing pipelines on your own data
+* `vignette("waterfall-lattice")` -- how much each step contributes, in
+  every combination of the other steps
 * `vignette("extending")` -- your own methods and metrics
 
 ## Status

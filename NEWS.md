@@ -1,3 +1,16 @@
+# cytokineR (development version)
+
+* `waterfall_lattice()` runs a pipeline with every on/off combination of its
+  optional steps and shows how much each step contributes to a result: the
+  change along the usual waterfall route, the order-free Shapley share
+  (shares add up to the total change), and the range across all combinations
+  of the other steps. `plot()` draws the lattice (every pipeline a node, the
+  waterfall route in bold) and the per-step contributions; see
+  `vignette("waterfall-lattice")`.
+* `metric_effect()`: standardised effect of a study variable (Cohen's d, or
+  the within-subject change with `adjust = ~ subject`) with its p-value, for
+  following the reported result through the pipeline.
+
 # cytokineR 0.1.0
 
 First release of the rewritten package.

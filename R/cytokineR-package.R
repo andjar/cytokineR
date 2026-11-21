@@ -25,7 +25,8 @@
 #' object ([cyto_steps()], [cyto_fit()]). Pipelines ([cyto_pipeline()]) can be
 #' compared with [benchmark_pipelines()] using scale-free metrics on held-out
 #' replicate material, and developed against data with known truth from
-#' [simulate_cyto()].
+#' [simulate_cyto()]. [waterfall_lattice()] shows how much each step
+#' contributes to a result, in every combination of the other steps.
 #'
 #' @keywords internal
 "_PACKAGE"
@@ -68,5 +69,9 @@ utils::globalVariables(c(
   # qc / metrics / benchmark / plots
   "cv", "m", "run", "spread", "r4", "var_tech", "ss", "df", "direction",
   "mean_rank", "correction", "k", "component", ".col", "nw", "scenario",
-  "fill"
+  "fill",
+  # waterfall lattice
+  "mask", "n_on", "p", "significant", "route", "step", "from", "to", "from_n",
+  "from_value", "to_value", "delta", "weight", "waterfall", "shapley",
+  "flips", "none", "total", "sig"
 ))

@@ -34,7 +34,8 @@ Each step is a registered method (see \code{\link[=cyto_methods]{cyto_methods()}
 object (\code{\link[=cyto_steps]{cyto_steps()}}, \code{\link[=cyto_fit]{cyto_fit()}}). Pipelines (\code{\link[=cyto_pipeline]{cyto_pipeline()}}) can be
 compared with \code{\link[=benchmark_pipelines]{benchmark_pipelines()}} using scale-free metrics on held-out
 replicate material, and developed against data with known truth from
-\code{\link[=simulate_cyto]{simulate_cyto()}}.
+\code{\link[=simulate_cyto]{simulate_cyto()}}. \code{\link[=waterfall_lattice]{waterfall_lattice()}} shows how much each step
+contributes to a result, in every combination of the other steps.
 }
 \seealso{
 Useful links:

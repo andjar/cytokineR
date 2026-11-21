@@ -1,0 +1,150 @@
+---
+title: "Which step did it? The waterfall lattice"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Which step did it? The waterfall lattice}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 7.5,
+                      fig.height = 4.5, dpi = 80)
+library(cytokineR)
+library(data.table)
+```
+
+A pre-processing pipeline is usually reported as a sequence: after bead QC,
+after plate normalisation, after batch correction. A table of results "after
+each step", or a waterfall chart of the changes, then seems to say how much
+each step contributed. It doesn't, quite. The change credited to a step depends
+on which steps came before it. Two steps that partly do the same job (plate
+centring and batch correction both remove batch shifts) split the credit
+according to their order: whichever runs first looks decisive, and the other
+looks useless.
+
+`waterfall_lattice()` runs the pipeline with **every on/off combination** of
+the optional steps (always in processing order) and draws all of them at once.
+
+* Each pipeline is a **node**, placed at its result and stacked by how many
+  steps are switched on (none at the bottom, all at the top).
+* Each **edge** switches one step on and is coloured by that step. The
+  horizontal length of an edge is that step's effect in that context.
+* The familiar waterfall is one **route** from bottom to top, drawn in bold.
+
+Each step's contribution is then summarised in an order-free way, as its
+**Shapley share**: the average change it causes over all orders of switching
+the steps on. The shares of all steps add up exactly to the total change, so
+nothing is double-counted or lost.
+
+## Which step bought the agreement between batches?
+
+The example study spans two kit lots. A good pipeline should make the high
+control, measured on every plate, agree across batches. That control is held
+out, so no step may use it for fitting (see `vignette("benchmarking")`):
+
+```{r}
+steps <- list(
+  log2   = pipe_transform("log2"),
+  beads  = pipe_custom(function(x) flag_beads(x, 35), label = "beads"),
+  median = pipe_normalize("median", within = "time"),
+  ctrl   = pipe_normalize("anchor", anchors = "ctrl_low", scope = "batch"),
+  bridge = pipe_correct_batch("bridge")
+)
+rel <- waterfall_lattice(cyto_example, steps, fixed = "log2",
+                         statistic = default_metrics()$reliability_batch,
+                         holdout = "ctrl_high")
+rel
+```
+
+The log2 transform is `fixed` (always applied); the other four steps give
+2^4 = 16 pipelines. The waterfall, adding the steps in processing order,
+credits median normalisation with almost all of the gain and bridging
+correction with almost nothing. The Shapley shares say the two contribute
+about equally. Median normalisation centres every plate, which also removes
+most of the batch shift, so a bridging correction that comes after it has
+little left to do. In any pipeline without plate centring, the bridging
+samples do the same job.
+
+```{r, fig.height = 5}
+plot(rel, analytes = c("IL-6", "IL-10"))
+```
+
+For IL-10 the reliability starts below zero: batch differences are larger
+than the spread of the study samples. There are two ways out: median
+normalisation alone reaches 0.90 and bridging correction alone 0.79,
+and together they reach 0.94. The low-control anchor, by contrast, lowers
+IL-10's reliability in every combination of the other steps: all its edges
+point left. The contributions view shows each step separately. The dots
+are the step's change in each of the 8 combinations of the other steps, the
+bar is its Shapley share, and the diamond is what the waterfall reported.
+
+```{r, fig.height = 6}
+plot(rel, "contributions")
+```
+
+Bead QC matters little here: in this example it only removes a few wells
+from the fits.
+
+## Does the effect you report depend on the pipeline?
+
+The same lattice can follow the number that ends up in the paper. Here the
+statistic is the within-subject change between the two time points,
+standardised by the residual SD (`metric_effect()`), with its p-value:
+
+```{r}
+eff <- waterfall_lattice(cyto_example, steps, fixed = "log2",
+                         statistic = function(x)
+                           metric_effect(x, ~ time, adjust = ~ subject))
+eff$totals[, .(analyte, none = round(none, 2), all = round(all, 2),
+               n_significant)]
+```
+
+For most analytes the pipeline barely matters: the effect is either clearly
+there or clearly absent in all 16 pipelines. MCP-1 is different: 12 pipelines
+give p < 0.05 and 4 do not. Because the data are simulated, we know the effect
+computed from the true concentrations, drawn as a dashed line:
+
+```{r, fig.height = 4.5}
+truth <- cyto_transform(cyto_example, "log2")
+truth$data[, value := truth]
+true_effect <- metric_effect(truth, ~ time, adjust = ~ subject)
+plot(eff, analytes = "MCP-1") +
+  ggplot2::geom_vline(xintercept = true_effect[analyte == "MCP-1", value],
+                      linetype = 2, colour = "grey40")
+```
+
+All four non-significant pipelines (open circles) use median normalisation
+without the control anchor. Median normalisation pulls the effect towards
+zero unless the control anchor runs too. Once the anchor is on, the median
+step makes little difference. A waterfall in processing order shows only one
+of these situations; the lattice shows both.
+
+```{r}
+summary(eff)[analyte == "MCP-1",
+             .(step, waterfall = round(waterfall, 3),
+               shapley = round(shapley, 3), min = round(min, 3),
+               max = round(max, 3))]
+```
+
+## Reading and using the lattice
+
+* **Any statistic.** `statistic` is a function of the processed object
+  that returns one number, one number per analyte, or a `metric_*()`-style
+  table (with an optional `p` column, which fills the nodes). Functions
+  with a `holdout` argument receive the `holdout` selector, so
+  `default_metrics()` elements work as they are.
+* **Order.** Steps are always applied in the order given in `steps`. The
+  `route` argument only decides which route is drawn in bold and used for
+  the `waterfall` column.
+* **Size.** K optional steps need 2^K pipelines. Shared prefixes are
+  computed once, but keep K small (the default limit is 8). Steps that are
+  not in question go in `fixed`.
+* **Interpretation.** Shapley shares describe how a result depends on the
+  steps. They do not say which result is right: combine them with held-out
+  material or simulations for that. A wide spread of dots for a step, or
+  dots on both sides of zero (`flips`), means that whether the step helps
+  depends on what else was done.
+* **Related.** The same decomposition is used for relative importance in
+  regression (LMG), and for explaining predictions in machine learning
+  (SHAP). Here it is applied to processing steps.

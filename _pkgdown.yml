@@ -9,6 +9,7 @@ articles:
       - cytokineR
       - signal-scales
       - benchmarking
+      - waterfall-lattice
       - extending
 
 reference:
@@ -60,6 +61,8 @@ reference:
       - holdout_folds
       - default_metrics
       - metric_reliability
+      - waterfall_lattice
+      - metric_effect
       - simulate_cyto
   - title: Plots
     contents:
