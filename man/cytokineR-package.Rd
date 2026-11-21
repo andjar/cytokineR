@@ -35,7 +35,10 @@ object (\code{\link[=cyto_steps]{cyto_steps()}}, \code{\link[=cyto_fit]{cyto_fit
 compared with \code{\link[=benchmark_pipelines]{benchmark_pipelines()}} using scale-free metrics on held-out
 replicate material, and developed against data with known truth from
 \code{\link[=simulate_cyto]{simulate_cyto()}}. \code{\link[=waterfall_lattice]{waterfall_lattice()}} shows how much each step
-contributes to a result, in every combination of the other steps.
+contributes to a result, in every combination of the other steps;
+\code{\link[=model_statistic]{model_statistic()}} attaches any model (\code{lm()}, \code{glm()}, ...) to it, and
+\code{\link[=select_pipeline]{select_pipeline()}} chooses a pipeline on training samples and checks the
+choice on unseen test samples (\code{\link[=split_samples]{split_samples()}}).
 }
 \seealso{
 Useful links:

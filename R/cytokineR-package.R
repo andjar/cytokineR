@@ -26,7 +26,10 @@
 #' compared with [benchmark_pipelines()] using scale-free metrics on held-out
 #' replicate material, and developed against data with known truth from
 #' [simulate_cyto()]. [waterfall_lattice()] shows how much each step
-#' contributes to a result, in every combination of the other steps.
+#' contributes to a result, in every combination of the other steps;
+#' [model_statistic()] attaches any model (`lm()`, `glm()`, ...) to it, and
+#' [select_pipeline()] chooses a pipeline on training samples and checks the
+#' choice on unseen test samples ([split_samples()]).
 #'
 #' @keywords internal
 "_PACKAGE"
@@ -73,5 +76,7 @@ utils::globalVariables(c(
   # waterfall lattice
   "mask", "n_on", "p", "significant", "route", "step", "from", "to", "from_n",
   "from_value", "to_value", "delta", "weight", "waterfall", "shapley",
-  "flips", "none", "total", "sig"
+  "flips", "none", "total", "sig",
+  # model statistics and pipeline selection
+  "se", "train", "rank_train", "rank_test", "selected", "what"
 ))

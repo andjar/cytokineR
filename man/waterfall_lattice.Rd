@@ -13,6 +13,7 @@ waterfall_lattice(
   fixed = character(),
   route = NULL,
   holdout = NULL,
+  test = NULL,
   label = NULL,
   alpha = 0.05,
   max_steps = 8,
@@ -41,6 +42,10 @@ waterfall; defaults to processing order.}
 \item{holdout}{Optional selector (see \link{selectors}); these rows get
 \code{use_for_fit = FALSE} before every pipeline runs, as in
 \code{\link[=benchmark_pipelines]{benchmark_pipelines()}}.}
+
+\item{test}{Optional test set: a selector or a vector of \code{sample_id}s (see
+\code{\link[=split_samples]{split_samples()}}). All rows of these samples get \code{use_for_fit = FALSE},
+and the set is passed to \code{statistic} if it has a \code{test} argument.}
 
 \item{label}{Name of the statistic used in printing and plots (default:
 the \code{metric} returned by \code{statistic}, or \code{"statistic"}).}
@@ -126,7 +131,19 @@ one.
 
 If the function has an argument called \code{holdout}, the \code{holdout} selector
 is passed to it, so the elements of \code{\link[=default_metrics]{default_metrics()}} can be used
-directly.
+directly; an argument called \code{test} receives the test set.
+\code{\link[=model_statistic]{model_statistic()}} turns any model (\code{lm()}, \code{glm()}, \code{lmer()}, ...) into
+such a function.
+}
+
+\section{Unseen test samples}{
+
+With \code{test} (e.g. from \code{\link[=split_samples]{split_samples()}}), the test samples get
+\code{use_for_fit = FALSE} before every pipeline runs: each normalisation, batch
+correction or imputation is fitted without them and then applied to them as
+to new data. The statistic receives the test set, so a model can be
+estimated or scored on samples that no pre-processing step has seen (see
+\code{\link[=model_statistic]{model_statistic()}}).
 }
 
 \examples{

@@ -56,7 +56,7 @@ w <- cyto_wide(x)    # one row per sample, one column per analyte
 | calibration | `cyto_calibrate()` | `5pl`, `4pl` (optionally robust), `spline` (monotone, no extrapolation), `shared` (robust shared-shape 5PL with shrunken gain/potency/background shifts); per plate, per batch, or one curve per study |
 | censored values | `cyto_impute()` | `fraction`, `tobit` (covariates, draws), `rank_tobit` |
 | comparison | `cyto_pipeline()`, `expand_pipelines()`, `benchmark_pipelines()`, `benchmark_simulations()`, `simulate_cyto()` | hold-out benchmarking with scale-free metrics; simulator with known truth |
-| attribution | `waterfall_lattice()`, `metric_effect()` | every on/off combination of the steps; each step's waterfall change, order-free Shapley share and range across contexts |
+| attribution and selection | `waterfall_lattice()`, `model_statistic()`, `select_pipeline()`, `split_samples()`, `metric_effect()` | every on/off combination of the steps; each step's waterfall change, order-free Shapley share and range across contexts; any model (`lm()`, `glm()`, ...) as the statistic; choose on training samples, judge on unseen test samples |
 
 New methods are registered with `register_cyto_method()` and are immediately
 usable in pipelines and benchmarks (`vignette("extending")`).
@@ -120,6 +120,28 @@ works, for example the effect you will report
 (`metric_effect(x, ~ time, adjust = ~ subject)`, with p-values marking which
 pipelines reach significance). See `vignette("waterfall-lattice")`.
 
+### Optimise the pipeline, but don't overfit
+
+Any model can be attached (`model_statistic()` wraps `lm()`, `glm()`,
+`lmer()`, ...), and the choice of pipeline can be checked on samples that
+nothing has seen:
+
+```r
+test <- split_samples(x_raw, prop = 0.3, by = "subject")   # unseen subjects
+auc  <- model_statistic(outcome ~ ., model = glm, family = binomial,
+                        data = "wide", cv_by = "subject")
+sel  <- select_pipeline(x_raw, steps, auc, test = test, fixed = "log2")
+sel            # chosen on training (cross-validated), then scored on test
+plot(sel)      # training vs test score of every pipeline
+x <- run_pipeline(x_raw, sel$pipeline)
+```
+
+The test samples get `use_for_fit = FALSE` in every pipeline, so no
+normalisation, batch correction or imputation is fitted on them. The
+pipeline is chosen on the training samples alone, so the test score of the
+chosen pipeline is an honest estimate. `test` works the same way in
+`waterfall_lattice()` and `benchmark_pipelines()`.
+
 ## What the simulations suggest
 
 Eleven representative pipelines, six scenarios (default, strong plate
@@ -168,7 +190,8 @@ real data before choosing.
   standard curves are fragile, harmonise-then-calibrate
 * `vignette("benchmarking")` -- comparing pipelines on your own data
 * `vignette("waterfall-lattice")` -- how much each step contributes, in
-  every combination of the other steps
+  every combination of the other steps; attaching a model; choosing a
+  pipeline without overfitting
 * `vignette("extending")` -- your own methods and metrics
 
 ## Status

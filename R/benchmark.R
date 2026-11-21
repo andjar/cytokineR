@@ -59,7 +59,12 @@ default_metrics <- function(bio = NULL, adjust = NULL, within = NULL,
 #'   [expand_pipelines()].
 #' @param holdout `NULL`, a selector (see [selectors]), or a named list of
 #'   selectors (folds).
-#' @param metrics List of metric functions, see [default_metrics()].
+#' @param metrics List of metric functions, see [default_metrics()]. A
+#'   metric with an argument called `test` receives the test set, e.g. a
+#'   [model_statistic()].
+#' @param test Optional unseen test set: a selector or a vector of
+#'   `sample_id`s (see [split_samples()]). All rows of these samples get
+#'   `use_for_fit = FALSE` in every fold, so no pipeline is fitted on them.
 #' @param keep Keep the processed objects in the result?
 #' @param verbose Print progress?
 #' @return An object of class `cyto_benchmark`: a list with `results` (long
@@ -83,8 +88,12 @@ default_metrics <- function(bio = NULL, adjust = NULL, within = NULL,
 #' @export
 benchmark_pipelines <- function(x, pipelines, holdout = NULL,
                                 metrics = default_metrics(), keep = FALSE,
-                                verbose = TRUE) {
+                                verbose = TRUE, test = NULL) {
   .check_cyto(x)
+  if (!is.null(test)) {
+    test <- .test_ids(x$data, test)
+    x <- .hide_rows(x, test = test)
+  }
   if (inherits(pipelines, c("cyto_pipeline", "cyto_step"))) {
     pipelines <- list(pipelines)
   }
@@ -134,7 +143,8 @@ benchmark_pipelines <- function(x, pipelines, holdout = NULL,
       }
       if (keep) objs[[paste(f, p, sep = "::")]] <- out
       for (mn in names(metrics)) {
-        mt <- tryCatch(metrics[[mn]](out, sel), error = function(e) e)
+        mt <- tryCatch(.call_metric(metrics[[mn]], out, sel, test),
+                       error = function(e) e)
         if (inherits(mt, "error")) {
           errs[[length(errs) + 1]] <- data.table::data.table(
             pipeline = p, fold = f,
@@ -156,11 +166,18 @@ benchmark_pipelines <- function(x, pipelines, holdout = NULL,
   errors <- data.table::rbindlist(errs)
   bm <- structure(list(results = results, errors = errors,
                        warnings = data.table::rbindlist(warns),
-                       pipelines = pipelines, holdout = folds,
+                       pipelines = pipelines, holdout = folds, test = test,
                        objects = if (keep) objs else NULL),
                   class = "cyto_benchmark")
   bm$summary <- summary(bm)
   bm
+}
+
+# Metrics are called as f(x, holdout); those with a `test` argument also get
+# the test set
+.call_metric <- function(f, x, holdout, test) {
+  if ("test" %in% names(formals(args(f)))) f(x, holdout, test = test) else
+    f(x, holdout)
 }
 
 #' @export

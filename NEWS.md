@@ -10,6 +10,20 @@
 * `metric_effect()`: standardised effect of a study variable (Cohen's d, or
   the within-subject change with `adjust = ~ subject`) with its p-value, for
   following the reported result through the pipeline.
+* `model_statistic()` turns any model called as `model(formula, data = )`
+  (`lm()`, `glm()`, `lme4::lmer()`, ...) into a statistic or metric: a
+  coefficient (with SE and p-value) per analyte or from one model on the
+  wide table, or out-of-sample prediction scores (AUC, R^2, RMSE,
+  correlation, or your own), cross-validated within training samples or
+  scored on unseen test samples.
+* Unseen test samples: `split_samples()` sets aside samples or whole
+  subjects (bridging samples stay in training); the new `test` argument of
+  `waterfall_lattice()` and `benchmark_pipelines()` hides them from every
+  fitting step and passes them to the statistic.
+* `select_pipeline()` chooses the best combination of steps on the training
+  samples and only then scores it on the test samples, reporting the
+  optimism of the choice; `plot()` shows the training against the test score
+  of every pipeline, and `$pipeline` is the chosen pipeline.
 
 # cytokineR 0.1.0
 

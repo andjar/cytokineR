@@ -127,13 +127,126 @@ summary(eff)[analyte == "MCP-1",
                max = round(max, 3))]
 ```
 
+## Attaching your own model
+
+`model_statistic()` turns any model called as `model(formula, data = ...)`
+into a statistic: `lm()`, `glm()`, `lme4::lmer()`, and so on. With `term`, it
+reports that coefficient. cytokineR values are always on a log2 scale, so a
+coefficient of `value` is a log2 fold change in every pipeline:
+
+```{r}
+fc <- model_statistic(value ~ time + subject, term = "time")
+fold <- waterfall_lattice(cyto_example, steps, fixed = "log2",
+                          statistic = fc)
+fold$totals[, .(analyte, none = round(none, 3), all = round(all, 3),
+                n_significant)]
+```
+
+By default the model is fitted per analyte to the long data (`value` plus all
+sample metadata). With `data = "wide"`, it is fitted once with one column per
+analyte, so the cytokines can be predictors (``outcome ~ `IL-6` + `IL-8` ``;
+a `.` stands for all analytes).
+
+## Optimising the pipeline without overfitting
+
+Running many pipelines and keeping the one with the best result is a way to
+overfit: part of what makes the winner win is noise. `select_pipeline()`
+keeps the choice honest with a test set of samples that nothing gets to see:
+
+1. `split_samples()` sets aside a share of the subjects (bridging samples
+   stay in training, so batch correction keeps its anchors).
+2. Every pipeline runs with the test samples marked `use_for_fit = FALSE`:
+   plate centring, batch correction and imputation are fitted without them,
+   and then applied to them as if they were new data.
+3. Each pipeline is scored on the training samples only. For a prediction
+   model the score is cross-validated within the training samples, keeping
+   each subject's samples in one fold.
+4. The best pipeline on training is chosen, and only then scored on the
+   test samples.
+
+Here the model predicts the time point from the whole cytokine profile, and
+the score is the AUC:
+
+```{r}
+test <- split_samples(cyto_example, prop = 0.4, by = "subject")
+auc <- model_statistic(factor(time) ~ ., model = glm, family = binomial,
+                       data = "wide", cv_by = "subject")
+sel <- select_pipeline(cyto_example, steps, auc, test = test, fixed = "log2")
+sel
+```
+
+```{r, fig.height = 5, fig.width = 6}
+plot(sel)
+```
+
+```{r, include = FALSE}
+ch <- sel$scores[selected == TRUE]
+rng <- round(range(sel$scores$train), 2)
+```
+
+Training AUCs range from `r rng[1]` to `r rng[2]`, so in this example the
+choice of pipeline matters little. The chosen pipeline (`r sel$selected`)
+scores `r round(ch$train, 3)` in training and `r round(ch$test, 3)` on the
+unseen subjects. A test score close to the training score means the choice
+did not overfit. `sel$pipeline` is the chosen pipeline, ready for
+`run_pipeline()`, and `sel$train` and `sel$test` are lattices of the
+training and test scores, so you can see what each step contributed on
+unseen samples:
+
+```{r, fig.height = 3}
+plot(sel$test, "contributions")
+```
+
+The test scores of the other pipelines are shown for reading only. Choosing
+by them would turn the test set into a second training set. A check with an
+outcome that is pure noise shows why. A random label is given to each
+subject, so no pipeline can truly predict it, and the selection is repeated
+for six such labels:
+
+```{r}
+noise_check <- function(seed) {
+  x <- cyto_example
+  x$data <- copy(x$data)
+  subj <- unique(x$data[sample_type == "unknown", subject])
+  set.seed(seed)
+  coin <- setNames(rbinom(length(subj), 1, 0.5), subj)
+  x$data[, noise := coin[subject]]
+  m <- model_statistic(noise ~ ., model = glm, family = binomial,
+                       data = "wide", cv_by = "subject")
+  s <- select_pipeline(x, steps, m, fixed = "log2",
+                       test = split_samples(x, prop = 0.4, by = "subject",
+                                            seed = seed))
+  sc <- s$scores
+  data.table(label = seed,
+             chosen_train = round(sc[selected == TRUE, train], 2),
+             chosen_test = round(sc[selected == TRUE, test], 2),
+             best_test = round(max(sc$test), 2))
+}
+noise <- rbindlist(lapply(1:6, noise_check))
+noise
+```
+
+An AUC of 0.5 is chance. The training score of the chosen pipeline can look
+like a signal (up to `r max(noise$chosen_train)`), and so can the best test
+score (up to `r max(noise$best_test)`). Only the test score of the pipeline
+chosen on training stays an honest estimate (mean
+`r round(mean(noise$chosen_test), 2)`).
+
 ## Reading and using the lattice
 
 * **Any statistic.** `statistic` is a function of the processed object
   that returns one number, one number per analyte, or a `metric_*()`-style
   table (with an optional `p` column, which fills the nodes). Functions
   with a `holdout` argument receive the `holdout` selector, so
-  `default_metrics()` elements work as they are.
+  `default_metrics()` elements work as they are; functions with a `test`
+  argument receive the test set. `model_statistic()` builds such a
+  function from any model.
+* **Unseen samples.** `test` works the same in `waterfall_lattice()`,
+  `select_pipeline()` and `benchmark_pipelines()`. Methods that fit on all
+  samples regardless of `use_for_fit` (here, `combat`) cannot keep test
+  samples unseen. Cross-validation within the training samples refits the
+  model but not the pre-processing, so it is slightly optimistic; the test
+  score is not.
 * **Order.** Steps are always applied in the order given in `steps`. The
   `route` argument only decides which route is drawn in bold and used for
   the `waterfall` column.

@@ -37,7 +37,17 @@
 #'
 #' If the function has an argument called `holdout`, the `holdout` selector
 #' is passed to it, so the elements of [default_metrics()] can be used
-#' directly.
+#' directly; an argument called `test` receives the test set.
+#' [model_statistic()] turns any model (`lm()`, `glm()`, `lmer()`, ...) into
+#' such a function.
+#'
+#' @section Unseen test samples:
+#' With `test` (e.g. from [split_samples()]), the test samples get
+#' `use_for_fit = FALSE` before every pipeline runs: each normalisation, batch
+#' correction or imputation is fitted without them and then applied to them as
+#' to new data. The statistic receives the test set, so a model can be
+#' estimated or scored on samples that no pre-processing step has seen (see
+#' [model_statistic()]).
 #'
 #' @param x A [cyto] object (raw, i.e. before processing).
 #' @param steps A named list of [pipe_step()]s (or small [cyto_pipeline()]s)
@@ -51,6 +61,9 @@
 #' @param holdout Optional selector (see [selectors]); these rows get
 #'   `use_for_fit = FALSE` before every pipeline runs, as in
 #'   [benchmark_pipelines()].
+#' @param test Optional test set: a selector or a vector of `sample_id`s (see
+#'   [split_samples()]). All rows of these samples get `use_for_fit = FALSE`,
+#'   and the set is passed to `statistic` if it has a `test` argument.
 #' @param label Name of the statistic used in printing and plots (default:
 #'   the `metric` returned by `statistic`, or `"statistic"`).
 #' @param alpha Significance level for marking nodes when `statistic` returns
@@ -100,8 +113,9 @@
 #' plot(lat, "contributions")
 #' @export
 waterfall_lattice <- function(x, steps, statistic, fixed = character(),
-                              route = NULL, holdout = NULL, label = NULL,
-                              alpha = 0.05, max_steps = 8, verbose = FALSE) {
+                              route = NULL, holdout = NULL, test = NULL,
+                              label = NULL, alpha = 0.05, max_steps = 8,
+                              verbose = FALSE) {
   .check_cyto(x)
   if (!is.function(statistic)) {
     stop("'statistic' must be a function of a cyto object.", call. = FALSE)
@@ -124,16 +138,32 @@ waterfall_lattice <- function(x, steps, statistic, fixed = character(),
          paste(optional, collapse = ", "), call. = FALSE)
   }
 
-  xf <- x
-  if (!is.null(holdout)) {
-    xf <- .cyto_copy(x)
-    h <- select_rows(xf$data, holdout)
-    if (!any(h)) stop("'holdout' selects no rows.", call. = FALSE)
-    xf$data[h, use_for_fit := FALSE]
-  }
+  xf <- .hide_rows(x, holdout, test)
+  run <- .lattice_run(xf, steps, optional, list(main = statistic), holdout,
+                      test, verbose)
+  out <- .lattice_build(run, "main", steps, optional, fixed, route, label,
+                        alpha)
+  out$test <- if (is.null(test)) NULL else .test_ids(x$data, test)
+  out
+}
 
-  run <- .lattice_run(xf, steps, optional, statistic, holdout, verbose)
-  .lattice_build(run, steps, optional, fixed, route, label, alpha)
+# Set use_for_fit = FALSE for held-out material and for every row of the
+# test samples
+.hide_rows <- function(x, holdout = NULL, test = NULL) {
+  if (is.null(holdout) && is.null(test)) return(x)
+  x <- .cyto_copy(x)
+  if (!is.null(holdout)) {
+    h <- select_rows(x$data, holdout)
+    if (!any(h)) stop("'holdout' selects no rows.", call. = FALSE)
+    x$data[h, use_for_fit := FALSE]
+  }
+  if (!is.null(test)) {
+    ids <- .test_ids(x$data, test)
+    h <- x$data$sample_id %in% ids
+    if (!any(h)) stop("'test' selects no samples.", call. = FALSE)
+    x$data[h, use_for_fit := FALSE]
+  }
+  x
 }
 
 # Name the steps and check them
@@ -203,23 +233,25 @@ waterfall_lattice <- function(x, steps, statistic, fixed = character(),
        "table with columns 'analyte' and 'value'.", call. = FALSE)
 }
 
-.call_statistic <- function(statistic, x, holdout) {
-  if ("holdout" %in% names(formals(args(statistic)))) {
-    statistic(x, holdout = holdout)
-  } else {
-    statistic(x)
-  }
+.call_statistic <- function(statistic, x, holdout, test = NULL) {
+  fa <- names(formals(args(statistic)))
+  a <- list(x)
+  if ("holdout" %in% fa) a["holdout"] <- list(holdout)
+  if ("test" %in% fa) a["test"] <- list(test)
+  do.call(statistic, a)
 }
 
 # Walk the binary tree of include/exclude decisions in processing order, so
 # that shared prefixes are computed once (about 2^(K+1) step applications
-# instead of K * 2^(K-1)), and evaluate the statistic at every leaf.
-.lattice_run <- function(x, steps, optional, statistic, holdout, verbose) {
+# instead of K * 2^(K-1)), and evaluate the statistics (a named list) at every
+# leaf.
+.lattice_run <- function(x, steps, optional, statistics, holdout, test,
+                         verbose) {
   K <- length(optional)
   bits <- stats::setNames(as.integer(2^(seq_len(K) - 1)), optional)
   env <- new.env(parent = emptyenv())
-  env$stats <- vector("list", 2^K)
-  env$metric <- NULL
+  env$stats <- lapply(statistics, function(s) vector("list", 2^K))
+  env$metric <- list()
   env$errors <- list()
   env$warnings <- list()
   env$done <- 0L
@@ -252,16 +284,20 @@ waterfall_lattice <- function(x, steps, statistic, fixed = character(),
     env$done <- env$done + 1L
     if (verbose) message("[", env$done, "/", 2^K, "] ", pipe_label(path))
     if (inherits(x, "error")) return(invisible(NULL))
-    st <- tryCatch(.lattice_stat(.call_statistic(statistic, x, holdout)),
-                   error = function(e) e)
-    if (inherits(st, "error")) {
-      env$errors[[length(env$errors) + 1L]] <- data.table::data.table(
-        pipeline = pipe_label(path),
-        message = paste0("statistic: ", conditionMessage(st)))
-      return(invisible(NULL))
+    for (sn in names(statistics)) {
+      st <- tryCatch(.lattice_stat(.call_statistic(statistics[[sn]], x,
+                                                   holdout, test)),
+                     error = function(e) e)
+      if (inherits(st, "error")) {
+        env$errors[[length(env$errors) + 1L]] <- data.table::data.table(
+          pipeline = pipe_label(path),
+          message = paste0("statistic", if (length(statistics) > 1)
+            paste0(" (", sn, ")"), ": ", conditionMessage(st)))
+        next
+      }
+      env$metric[[sn]] <- env$metric[[sn]] %||% attr(st, "metric")
+      env$stats[[sn]][[mask + 1L]] <- st
     }
-    env$metric <- env$metric %||% attr(st, "metric")
-    env$stats[[mask + 1L]] <- st
     invisible(NULL)
   }
   walk <- function(x, i, mask, path) {
@@ -280,7 +316,8 @@ waterfall_lattice <- function(x, steps, statistic, fixed = character(),
   env
 }
 
-.lattice_build <- function(run, steps, optional, fixed, route, label, alpha) {
+.lattice_build <- function(run, which, steps, optional, fixed, route, label,
+                           alpha) {
   K <- length(optional)
   bits <- stats::setNames(as.integer(2^(seq_len(K) - 1)), optional)
   masks <- seq_len(2^K) - 1L
@@ -293,7 +330,7 @@ waterfall_lattice <- function(x, steps, statistic, fixed = character(),
   })
   route_masks <- c(0L, cumsum(bits[route]))
 
-  st <- run$stats
+  st <- run$stats[[which]]
   analytes <- unique(unlist(lapply(st, function(s) s$analyte)))
   if (!length(analytes)) {
     msg <- if (length(run$errors)) {
@@ -369,7 +406,7 @@ waterfall_lattice <- function(x, steps, statistic, fixed = character(),
     errors = data.table::rbindlist(run$errors),
     warnings = data.table::rbindlist(run$warnings),
     steps = steps, optional = optional, fixed = fixed, route = route,
-    label = label %||% run$metric %||% "statistic", alpha = alpha,
+    label = label %||% run$metric[[which]] %||% "statistic", alpha = alpha,
     has_p = has_p
   ), class = "cyto_lattice")
 }
@@ -385,6 +422,10 @@ print.cyto_lattice <- function(x, digits = 3, ...) {
     cat("Always applied: ", paste(x$fixed, collapse = ", "), "\n", sep = "")
   }
   cat("Waterfall route: ", paste(x$route, collapse = " > "), "\n", sep = "")
+  if (length(x$test)) {
+    cat("Test set: ", length(x$test), " samples, not used for fitting\n",
+        sep = "")
+  }
   ct <- data.table::copy(x$contributions)
   if (na == 1) {
     cat("\nContribution of each step (waterfall: along the route; shapley: ",
